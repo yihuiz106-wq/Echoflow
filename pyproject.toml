@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "echoflow"
+version = "0.1.0"
+description = "AI-powered video summarization agent"
+authors = [
+  { name = "Zou Yihui" },
+]
+requires-python = ">=3.9"
+dependencies = [
+    "typer",
+    "rich",
+    "yt-dlp",
+    "google-generativeai",
+    "python-dotenv",
+]
+
+[project.scripts]
+# 左边是终端命令名，右边是 Python 对象路径
+echoflow = "echoflow.main:app"
