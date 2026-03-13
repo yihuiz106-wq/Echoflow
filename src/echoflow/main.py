@@ -10,6 +10,7 @@ from rich.console import Console
 
 # 导入配置模块
 from echoflow import config
+from echoflow.config import set_language
 
 # 导入核心模块 (注意：writer 必须更新以接收 output_dir)
 from echoflow.downloader import download_audio
@@ -75,12 +76,33 @@ def config_update(
     except Exception as e:
         console.print(f"[bold red]写入失败: {e}[/bold red]")
 
+@app.command("language")
+def language(
+    target_lang: str = typer.Argument(..., help="设置输出语言，例如 '中文' 或 'English'")
+):
+    """
+    设置全局输出语言（无论文稿什么语言，最终笔记强制使用该语言输出）。
+    """
+    raw = (target_lang or "").strip()
+    if not raw:
+        console.print("[bold red]语言不能为空[/bold red]")
+        raise typer.Exit(code=1)
+
+    normalized = raw
+    lower = raw.lower()
+    if lower in {"英文", "en", "eng", "english"}:
+        normalized = "English"
+    elif lower in {"中文", "zh", "zh-cn", "zh-hans", "chinese", "cn"}:
+        normalized = "中文"
+
+    set_language(normalized)
+
 @app.command(name="run", help="开始处理: 下载 -> 转录 -> 总结")
 def main(url: str):
     """
     处理视频链接：下载音频 -> 语音转文字 -> AI 总结 -> 生成 Markdown 笔记。
     """
-    # --- Step 0: 检查配置 ---
+    # 检查配置
     if not config.load_config():
         console.print("[bold yellow]⚠️ 尚未配置 API Key 或 输出路径。[/bold yellow]")
         if typer.confirm("是否现在进行初始化?", default=True):
@@ -99,31 +121,37 @@ def main(url: str):
         console.print(f"目标: [underline]{url}[/underline]")
         console.print(f"保存至: [dim]{output_dir}[/dim]")
 
-        # --- Step 1: 下载 ---
-        console.print("\n[bold blue]Step 1: 下载音频[/bold blue]")
-        audio_path, metadata = download_audio(url)
+        console.print("\n[bold cyan]正在解析视频链接并准备下载...[/bold cyan]")
+        audio_path, subtitle_text, metadata = download_audio(url)
+
         console.print(f"[green]✓[/green] 下载完成: [bold]{metadata.get('title', 'Unknown')}[/bold]")
 
-        # --- Step 2: 转录 ---
-        console.print("\n[bold blue]Step 2: 语音转文字[/bold blue]")
-        with console.status("[cyan]正在转录音频 (SiliconFlow)...[/cyan]", spinner="dots"):
-            transcript = transcribe_audio(audio_path)
-        console.print(f"[green]✓[/green] 转录完成 (字数: {len(transcript)})")
-        
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
+        if subtitle_text:
+            transcript = subtitle_text
+            console.print(
+                f"[green]✓[/green] 发现自带字幕，直接提取文本 (提取字数: {len(transcript)}字)"
+            )
+            if audio_path and os.path.exists(audio_path):
+                os.remove(audio_path)
+        else:
+            with console.status(
+                "[bold blue]未发现字幕，正在连接 AI 语音转写服务...[/bold blue]"
+            ):
+                transcript = transcribe_audio(audio_path)
+            console.print(f"[green]✓[/green] 语音转写完成 (生成字数: {len(transcript)}字)")
+            if audio_path and os.path.exists(audio_path):
+                os.remove(audio_path)
 
-        # --- Step 3: 总结 ---
-        console.print("\n[bold blue]Step 3: AI 总结与改写[/bold blue]")
-        with console.status("[purple]DeepSeek 正在思考 (R1)...[/purple]", spinner="dots"):
-            description, content = generate_summary(transcript)    
-        console.print(f"[green]✓[/green] AI 思考完成")
+        with console.status(
+            "[bold purple]正在连接 DeepSeek 进行深度思考与总结...[/bold purple]"
+        ):
+            description, content = generate_summary(transcript)
+            ai_data = {"description": description, "content": content}
+        console.print(
+            f"[green]✓[/green] AI 总结完成 (生成字数: {len(ai_data.get('content', ''))}字)"
+        )
 
-        # --- Step 4: 保存 ---
-        console.print("\n[bold blue]Step 4: 保存文件[/bold blue]")
-        
-        # 关键修改：将 output_dir 传入 save_markdown
-        # 注意：你需要同步修改 src/echoflow/writer.py 接受这个参数
+        console.print("[bold yellow]正在排版并保存至 Obsidian 目录...[/bold yellow]")
         final_path = save_markdown(metadata, description, content, output_dir=output_dir)
 
         # --- 结束 ---
@@ -132,8 +160,8 @@ def main(url: str):
         console.print(f"文件路径: [link=file://{abs_path}]{final_path}[/link]")
 
     except Exception as e:
-        console.print(f"\n[bold red]❌ 发生错误: {e}[/bold red]")
-        # console.print_exception() # 调试时打开
+        console.print(f"\n[bold red]❌ 运行失败: {str(e)}[/bold red]")
+        console.print("[dim]提示: 请检查网络连接、视频链接是否有效，或 API 余额是否充足。[/dim]")
         raise typer.Exit(code=1)
 
 if __name__ == "__main__":

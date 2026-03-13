@@ -4,6 +4,7 @@ Echoflow CLI - AI Summary & Rewrite Module
 """
 
 import os
+import json
 import re
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -29,6 +30,8 @@ def generate_summary(text: str) -> tuple[str, str]:
         ValueError: 当 API Key 未配置或输入文本为空时
         Exception: API 调用失败
     """
+    target_lang = os.getenv("OUTPUT_LANGUAGE", "中文")
+
     # 验证 API Key
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
@@ -51,37 +54,28 @@ def generate_summary(text: str) -> tuple[str, str]:
         print(f"正在使用 DeepSeek Reasoner 生成总结...")
         print(f"输入文本长度: {len(text)} 字符")
         
-        # System Prompt: 视频内容整理专家
-        system_prompt = """你是一个专业的视频内容整理专家。请根据用户提供的视频转录文本,生成一份 Obsidian 风格的 Markdown 笔记。
+        system_prompt = f"""
+你是一个专业的视频内容分析与整理专家。无论用户提供的转录文稿是什么语言，你都必须**强制使用 {target_lang}** 来输出最终结果。
 
-输出要求:
-1. 第一行: 输出 `DESCRIPTION: ` 开头的一句话简介 (30-50字,概括核心主题)
-2. 第二行开始: 输出 Markdown 正文,格式如下:
-   - 使用 `> [!SUMMARY]+ 核心摘要` Callout 块,列出 3-5 个核心观点 (每个观点用一行,以 `> - `开头)
-   - 使用 ## 二级标题分段,将口语化的文本改写为结构严谨、逻辑清晰的书面文章
-   - 保持中文输出,语言流畅自然
-   - 如果原文包含重要的数据、引用或专业术语,请保留
+请阅读提供的视频转录文稿，并返回一段 JSON 格式的数据，包含 `description` 和 `content` 两个字段。
 
-输出格式示例:
-DESCRIPTION: 本文探讨人工智能技术在大语言模型领域的突破及其对工作效率、创造力和知识普及的三大核心影响。
-
-> [!SUMMARY]+ 核心摘要
-> - 核心观点1
-> - 核心观点2
-> - 核心观点3
-
-## 第一部分标题
-内容...
-
-## 第二部分标题
-内容..."""
+要求如下：
+1. **description**: 一句话概括视频核心内容（用于属性标签）。
+2. **content**: 完整的 Markdown 正文，必须严格遵守以下结构：
+   - **总结块**: 开头必须使用 Obsidian Callout 语法 `> [!SUMMARY]+ 视频核心总结` 将总结框起来，包含视频的要点，描述这个视频在干什么。
+   - **客观详述**: 将文稿转换成一篇可读性极高、逻辑清晰的文章。
+   - **客观视角**: 从第三人称客观的角度来描述视频内容（例如“视频指出了...”、“作者展示了...”），不要使用“我”或第一人称口语。
+   - **细节丰满**: 尽可能的包含足够多的细节！如果输入的文稿很长，生成的这篇详述文章也应该对应地写得非常长、非常详细。绝对不能只做简单敷衍的概括。
+   - **格式要求**: 每次换行或分段时，**必须空一行**（即段落之间必须有两个换行符 `\\n\\n`）。
+   - 不要包含 `<think>` 标签的内容。
+""".strip()
 
         # 调用 DeepSeek Reasoner API
         response = client.chat.completions.create(
             model="deepseek-reasoner",  # DeepSeek 官方推理模型
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"请整理以下视频转录文本:\n\n{text}"}
+                {"role": "user", "content": text}
             ],
             temperature=0.6,  # 适中的创造性
             max_tokens=4000   # 确保有足够空间输出完整内容
@@ -93,11 +87,14 @@ DESCRIPTION: 本文探讨人工智能技术在大语言模型领域的突破及�
         if not raw_content or raw_content.strip() == "":
             raise Exception("AI 返回内容为空")
         
-        # 处理 DeepSeek Reasoner 的思考过程
-        processed_content = process_deepseek_thinking(raw_content)
-        
-        # 分离 description 和 content
-        description, content = split_description_and_content(processed_content)
+        # 移除 <think>...</think>（防止污染输出协议）
+        processed_content = strip_think_tags(raw_content).strip()
+
+        # 优先按 JSON 协议解析
+        description, content = parse_json_description_content(processed_content)
+        if not description or not content:
+            # 兼容旧协议（DESCRIPTION: + Markdown）
+            description, content = split_description_and_content(processed_content)
         
         print(f"✓ 总结生成成功")
         print(f"  简介: {description[:50]}..." if len(description) > 50 else f"  简介: {description}")
@@ -118,6 +115,40 @@ DESCRIPTION: 本文探讨人工智能技术在大语言模型领域的突破及�
             print("提示: 输入文本过长,请尝试分段处理")
         
         raise Exception(f"DeepSeek Reasoner API 调用失败: {error_message}")
+
+
+def strip_think_tags(content: str) -> str:
+    """
+    移除 <think>...</think> 区块，避免返回内容混入推理过程。
+    """
+    think_pattern = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+    return think_pattern.sub("", content)
+
+
+def parse_json_description_content(text: str) -> tuple[str, str]:
+    """
+    从模型返回中解析 JSON，提取 description/content。
+    支持返回内容前后夹杂少量非 JSON 文本的情况。
+    """
+    s = text.strip()
+    try:
+        obj = json.loads(s)
+        return str(obj.get("description", "")).strip(), str(obj.get("content", "")).strip()
+    except Exception:
+        pass
+
+    # 容错：尝试截取最外层 JSON 对象
+    start = s.find("{")
+    end = s.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = s[start : end + 1]
+        try:
+            obj = json.loads(candidate)
+            return str(obj.get("description", "")).strip(), str(obj.get("content", "")).strip()
+        except Exception:
+            return "", ""
+
+    return "", ""
 
 
 def split_description_and_content(text: str) -> tuple[str, str]:

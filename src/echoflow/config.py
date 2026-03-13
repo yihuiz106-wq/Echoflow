@@ -46,9 +46,18 @@ def init_config():
     set_key(str(CONFIG_PATH), "SILICONFLOW_API_KEY", silicon_key, quote_mode="never")
     set_key(str(CONFIG_PATH), "DEEPSEEK_API_KEY", deepseek_key, quote_mode="never")
     set_key(str(CONFIG_PATH), "OUTPUT_DIR", output_dir, quote_mode="never")
+    set_key(str(CONFIG_PATH), "OUTPUT_LANGUAGE", "中文", quote_mode="never")
     
     console.print(f"\n✅ 配置已保存至: {CONFIG_PATH}")
     console.print(f"📝 最终路径: [bold cyan]{output_dir}[/bold cyan]")
+
+def set_language(lang: str):
+    """
+    设置全局输出语言（最终笔记输出语言）
+    """
+    CONFIG_PATH.touch(mode=0o600, exist_ok=True)
+    set_key(str(CONFIG_PATH), "OUTPUT_LANGUAGE", lang, quote_mode="never")
+    console.print(f"✅ [bold green]输出语言已更新:[/bold green] [cyan]{lang}[/cyan]")
 
 def load_config() -> bool:
     if not CONFIG_PATH.exists():
