@@ -51,9 +51,6 @@ def generate_summary(text: str) -> tuple[str, str]:
             base_url="https://api.deepseek.com"
         )
         
-        print(f"正在使用 DeepSeek Reasoner 生成总结...")
-        print(f"输入文本长度: {len(text)} 字符")
-        
         system_prompt = f"""
 你是一个专业的视频内容分析与整理专家。无论用户提供的转录文稿是什么语言，你都必须**强制使用 {target_lang}** 来输出最终结果。
 
@@ -95,24 +92,10 @@ def generate_summary(text: str) -> tuple[str, str]:
             # 兼容旧协议（DESCRIPTION: + Markdown）
             description, content = split_description_and_content(processed_content)
         
-        print(f"✓ 总结生成成功")
-        print(f"  简介: {description[:50]}..." if len(description) > 50 else f"  简介: {description}")
-        print(f"  正文长度: {len(content)} 字符")
-        
         return description, content
     
     except Exception as e:
         error_message = str(e)
-        print(f"✗ AI 总结失败: {error_message}")
-        
-        # 提供友好的错误提示
-        if "api_key" in error_message.lower():
-            print("提示: 请检查 DEEPSEEK_API_KEY 是否正确配置")
-        elif "rate limit" in error_message.lower():
-            print("提示: API 调用频率超限,请稍后重试")
-        elif "context_length" in error_message.lower():
-            print("提示: 输入文本过长,请尝试分段处理")
-        
         raise Exception(f"DeepSeek Reasoner API 调用失败: {error_message}")
 
 

@@ -1,6 +1,6 @@
 # EchoFlow
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
 ![AI-Generated](https://img.shields.io/badge/Code_by-AI-FF69B4)
 ![Lazy-Dev](https://img.shields.io/badge/PyPI-Too_Troublesome-red)
 
@@ -11,7 +11,7 @@
 
 EchoFlow 是一个为 **Obsidian 用户** 设计的命令行工具。
 
-它可以把 Bilibili 或 YouTube 视频变成一篇格式完美的 Markdown 笔记，自动包含元数据、视频简介和 AI 总结。
+它可以把 Bilibili 或 YouTube 视频变成一篇格式完美的 Markdown 笔记，自动包含元数据、视频简介和 AI 总结；也可以只输出识别出来的原始文本。
 
 ### ⚠️ 极其“固执”的设计哲学 (必读)
 
@@ -26,7 +26,7 @@ EchoFlow 是一个为 **Obsidian 用户** 设计的命令行工具。
 
 ## 📦 安装与配置
 
-本项目基于 Python 3.10+。为了不污染你的系统环境，推荐使用虚拟环境安装。
+本项目基于 Python 3.9+。为了不污染你的系统环境，推荐使用虚拟环境安装。
 
 ### 1. 克隆与依赖安装
 
@@ -42,6 +42,12 @@ source .venv/bin/activate  # Windows 用户请使用: .venv\Scripts\activate
 # 3. 安装依赖 (开发者模式)
 pip install -e .
 
+```
+
+如果你移动过项目目录，或者发现 `.venv/bin/echoflow` 报 shebang 路径错误，直接在项目根目录重新执行一次：
+
+```bash
+.venv/bin/python -m pip install -e . --no-deps
 ```
 
 ### 2. ⚡️ 让命令全局可用 (关键步骤)
@@ -91,6 +97,17 @@ which echoflow
 echoflow run "[https://www.bilibili.com/video/BV1xxxxxx](https://www.bilibili.com/video/BV1xxxxxx)"
 ```
 
+### 4. 只导出识别文本
+
+```bash
+echoflow transcript "https://www.youtube.com/watch?v=xxxxxx"
+```
+
+这个命令会：
+- 优先提取视频自带字幕
+- 没有字幕时再调用 SiliconFlow 做语音识别
+- 最终保存为原始 `.txt` 文本，不做 DeepSeek 总结
+
 
 🛠 常用命令
 ```bash
@@ -99,6 +116,9 @@ which echoflow
 
 # 如果你换了电脑或者重装了 Obsidian，想改保存路径
 echoflow config dir "/Users/me/New/Path"
+
+# 只输出转录文本
+echoflow transcript "https://www.youtube.com/watch?v=xxxxxx"
 
 # 看看帮助
 echoflow --help

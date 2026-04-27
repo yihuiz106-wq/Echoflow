@@ -46,10 +46,7 @@ def transcribe_audio(audio_path: str) -> str:
             api_key=api_key,
             base_url="https://api.siliconflow.cn/v1"
         )
-        
-        print(f"正在转录音频文件: {audio_file.name}")
-        print(f"文件大小: {audio_file.stat().st_size / 1024:.2f} KB")
-        
+
         # 打开音频文件并调用转录接口
         with open(audio_path, "rb") as audio_file_obj:
             response = client.audio.transcriptions.create(
@@ -61,30 +58,16 @@ def transcribe_audio(audio_path: str) -> str:
         transcription_text = response.text
         
         if not transcription_text or transcription_text.strip() == "":
-            print("警告: 转录结果为空,可能是音频文件无有效内容")
             return ""
-        
-        print(f"✓ 转录成功,文本长度: {len(transcription_text)} 字符")
+
         return transcription_text
     
     except FileNotFoundError as e:
-        # 文件不存在错误 (已在前面检查,这里是额外保护)
-        print(f"✗ 错误: {e}")
         raise
     
     except Exception as e:
         # 捕获所有其他错误 (API 调用失败、网络问题等)
         error_message = str(e)
-        print(f"✗ 转录失败: {error_message}")
-        
-        # 提供更友好的错误提示
-        if "api_key" in error_message.lower():
-            print("提示: 请检查 SILICONFLOW_API_KEY 是否正确配置")
-        elif "network" in error_message.lower() or "connection" in error_message.lower():
-            print("提示: 请检查网络连接")
-        elif "rate limit" in error_message.lower():
-            print("提示: API 调用频率超限,请稍后重试")
-        
         raise Exception(f"SiliconFlow API 调用失败: {error_message}")
 
 

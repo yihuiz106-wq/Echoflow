@@ -4,8 +4,9 @@ Echoflow CLI - Main Entry Point
 """
 
 import os
-import typer
 from pathlib import Path
+
+import typer
 from rich.console import Console
 
 # 导入配置模块
@@ -16,11 +17,61 @@ from echoflow.config import set_language
 from echoflow.downloader import download_audio
 from echoflow.transcriber import transcribe_audio
 from echoflow.summarizer import generate_summary
-from echoflow.writer import save_markdown
+from echoflow.writer import save_markdown, save_transcript
 
 # 初始化 Typer 应用和 Rich Console
 app = typer.Typer(help="Echoflow CLI - 视频转文字 + AI 总结工具")
 console = Console()
+
+
+def ensure_config(required_keys: tuple[str, ...], hint_command: str) -> None:
+    if config.load_config(required_keys=required_keys):
+        return
+
+    console.print("[bold yellow]⚠️ 尚未完成当前命令所需配置。[/bold yellow]")
+    if typer.confirm("是否现在进行初始化?", default=True):
+        config.init_config()
+        if config.load_config(required_keys=required_keys):
+            return
+
+    console.print(f"[red]程序退出。请先运行 `{hint_command}` 或补齐配置。[/red]")
+    raise typer.Exit(code=1)
+
+
+def format_file_size(path: str) -> str:
+    size = Path(path).stat().st_size
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.2f} MB"
+    return f"{size / 1024:.2f} KB"
+
+
+def fetch_transcript(url: str, *, convert_audio: bool = True) -> tuple[dict, str]:
+    """
+    下载视频并返回元数据与文本。
+    优先使用现成字幕；没有字幕时再调用 ASR。
+    """
+    audio_path = None
+
+    try:
+        audio_path, subtitle_text, metadata, transcript_source = download_audio(
+            url,
+            convert_audio=convert_audio,
+        )
+
+        if subtitle_text:
+            console.print("[green]✓[/green] 字幕下载成功")
+            return metadata, subtitle_text
+
+        if transcript_source == "audio":
+            console.print("[green]✓[/green] 音频下载成功")
+        console.print("[bold cyan]正在上传音频到 SiliconFlow...[/bold cyan]")
+        console.print(f"[dim]{Path(audio_path).name} · {format_file_size(audio_path)}[/dim]")
+        transcript = transcribe_audio(audio_path)
+        return metadata, transcript
+
+    finally:
+        if audio_path and os.path.exists(audio_path):
+            os.remove(audio_path)
 
 @app.command()
 def init():
@@ -98,66 +149,65 @@ def language(
     set_language(normalized)
 
 @app.command(name="run", help="开始处理: 下载 -> 转录 -> 总结")
-def main(url: str):
+def main(
+    url: str,
+    raw: bool = typer.Option(False, "--raw", "--no-convert", help="跳过 mp3 转码，直接使用原始音频文件"),
+):
     """
     处理视频链接：下载音频 -> 语音转文字 -> AI 总结 -> 生成 Markdown 笔记。
     """
     # 检查配置
-    if not config.load_config():
-        console.print("[bold yellow]⚠️ 尚未配置 API Key 或 输出路径。[/bold yellow]")
-        if typer.confirm("是否现在进行初始化?", default=True):
-            config.init_config()
-            config.load_config() # 重新加载
-        else:
-            console.print("[red]程序退出。请运行 `echoflow init`。[/red]")
-            raise typer.Exit(code=1)
+    ensure_config(
+        required_keys=("DEEPSEEK_API_KEY", "OUTPUT_DIR"),
+        hint_command="echoflow init",
+    )
 
     # 获取配置中的输出路径
     output_dir = os.getenv("OUTPUT_DIR")
 
     try:
-        # 1. 启动信息
-        console.print(f"[bold cyan]Echoflow 启动[/bold cyan]")
-        console.print(f"目标: [underline]{url}[/underline]")
-        console.print(f"保存至: [dim]{output_dir}[/dim]")
+        console.print("[bold cyan]Echoflow[/bold cyan]")
 
-        console.print("\n[bold cyan]正在解析视频链接并准备下载...[/bold cyan]")
-        audio_path, subtitle_text, metadata = download_audio(url)
-
-        console.print(f"[green]✓[/green] 下载完成: [bold]{metadata.get('title', 'Unknown')}[/bold]")
-
-        if subtitle_text:
-            transcript = subtitle_text
-            console.print(
-                f"[green]✓[/green] 发现自带字幕，直接提取文本 (提取字数: {len(transcript)}字)"
-            )
-            if audio_path and os.path.exists(audio_path):
-                os.remove(audio_path)
-        else:
-            with console.status(
-                "[bold blue]未发现字幕，正在连接 AI 语音转写服务...[/bold blue]"
-            ):
-                transcript = transcribe_audio(audio_path)
-            console.print(f"[green]✓[/green] 语音转写完成 (生成字数: {len(transcript)}字)")
-            if audio_path and os.path.exists(audio_path):
-                os.remove(audio_path)
+        metadata, transcript = fetch_transcript(url, convert_audio=not raw)
 
         with console.status(
-            "[bold purple]正在连接 DeepSeek 进行深度思考与总结...[/bold purple]"
+            "[bold cyan]正在生成总结...[/bold cyan]"
         ):
             description, content = generate_summary(transcript)
-            ai_data = {"description": description, "content": content}
-        console.print(
-            f"[green]✓[/green] AI 总结完成 (生成字数: {len(ai_data.get('content', ''))}字)"
-        )
 
-        console.print("[bold yellow]正在排版并保存至 Obsidian 目录...[/bold yellow]")
         final_path = save_markdown(metadata, description, content, output_dir=output_dir)
 
-        # --- 结束 ---
-        console.print(f"\n[bold green]✓ 全部完成！[/bold green]")
-        abs_path = Path(final_path).absolute()
-        console.print(f"文件路径: [link=file://{abs_path}]{final_path}[/link]")
+        console.print(f"[bold green]✓ 已保存[/bold green] [link=file://{Path(final_path).absolute()}]{final_path}[/link]")
+
+    except Exception as e:
+        console.print(f"\n[bold red]❌ 运行失败: {str(e)}[/bold red]")
+        console.print("[dim]提示: 请检查网络连接、视频链接是否有效，或 API 余额是否充足。[/dim]")
+        raise typer.Exit(code=1)
+
+
+@app.command(name="transcript", help="开始处理: 下载 -> 转录/提取字幕 -> 保存原始文本")
+def transcript_only(
+    url: str,
+    raw: bool = typer.Option(False, "--raw", "--no-convert", help="跳过 mp3 转码，直接使用原始音频文件"),
+):
+    """
+    处理视频链接：下载音频 -> 提取字幕或语音转写 -> 保存原始文本。
+    """
+    ensure_config(
+        required_keys=("OUTPUT_DIR",),
+        hint_command="echoflow init",
+    )
+
+    output_dir = os.getenv("OUTPUT_DIR")
+
+    try:
+        console.print("[bold cyan]Echoflow Transcript[/bold cyan]")
+
+        metadata, transcript = fetch_transcript(url, convert_audio=not raw)
+
+        final_path = save_transcript(metadata, transcript, output_dir=output_dir)
+
+        console.print(f"[bold green]✓ 已保存[/bold green] [link=file://{Path(final_path).absolute()}]{final_path}[/link]")
 
     except Exception as e:
         console.print(f"\n[bold red]❌ 运行失败: {str(e)}[/bold red]")

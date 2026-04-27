@@ -1,6 +1,6 @@
 import os
-import typer
 from pathlib import Path
+
 from dotenv import load_dotenv, set_key
 from rich.console import Console
 from rich.prompt import Prompt
@@ -59,9 +59,10 @@ def set_language(lang: str):
     set_key(str(CONFIG_PATH), "OUTPUT_LANGUAGE", lang, quote_mode="never")
     console.print(f"✅ [bold green]输出语言已更新:[/bold green] [cyan]{lang}[/cyan]")
 
-def load_config() -> bool:
+def load_config(required_keys: tuple[str, ...] | None = None) -> bool:
     if not CONFIG_PATH.exists():
         return False
     # 加载时 python-dotenv 会自动处理带空格的路径
     load_dotenv(CONFIG_PATH)
-    return all(os.getenv(k) for k in ["SILICONFLOW_API_KEY", "DEEPSEEK_API_KEY", "OUTPUT_DIR"])
+    keys = required_keys or ("SILICONFLOW_API_KEY", "DEEPSEEK_API_KEY", "OUTPUT_DIR")
+    return all(os.getenv(k) for k in keys)

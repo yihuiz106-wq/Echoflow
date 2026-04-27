@@ -71,103 +71,75 @@ def clean_subtitle(file_path: str) -> str:
     return text
 
 
-def download_audio(url: str) -> tuple[str | None, str | None, dict]:
+def download_audio(
+    url: str,
+    *,
+    convert_audio: bool = True,
+) -> tuple[str | None, str | None, dict, str]:
     """
     下载音频到系统临时缓存目录，并尽可能下载/提取字幕文本。
     若字幕下载遇到 429 / Too Many Requests / subtitles 相关错误，将自动降级为纯音频下载。
 
     Returns:
-        (audio_path, subtitle_text, metadata)
+        (audio_path, subtitle_text, metadata, transcript_source)
     """
     temp_dir = Path(tempfile.gettempdir()) / "echoflow_cache"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     console = Console()
 
-    # 1) 分离配置：基础音频配置 + 字幕配置
+    # 1) 分离配置：基础配置 + 字幕探测配置 + 音频下载配置
     #    注意：quiet + noprogress + logger=None 用于彻底屏蔽 yt-dlp 原生输出，避免与 Rich 冲突“闪烁”
-    base_opts: dict = {
-        "format": "bestaudio/best",
+    common_opts: dict = {
         "outtmpl": str(temp_dir / "%(id)s.%(ext)s"),
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }
-        ],
         "quiet": True,
         "noprogress": True,
         "no_warnings": True,
         "logger": None,
     }
 
-    sub_opts: dict = {
+    subtitle_probe_opts: dict = {
+        **common_opts,
+        "download": False,
+        "extract_flat": False,
+    }
+
+    subtitle_download_opts: dict = {
+        **common_opts,
+        "skip_download": True,
         "writesubtitles": True,
         "writeautomaticsub": True,
         "subtitleslangs": ["zh-Hans", "zh-Hant", "zh-CN", "zh-TW", "zh", "en"],
         "subtitlesformat": "vtt/srt/best",
     }
 
-    def run_download(opts: dict) -> tuple[dict, str]:
-        """
-        每次提取操作都创建独立 Progress，避免状态复用导致 UI 异常。
-        """
-        progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(),
-            DownloadColumn(),
-            TransferSpeedColumn(),
-            TimeRemainingColumn(),
-            console=console,
-            transient=False,  # 进度条完成后保留在屏幕上
-        )
-        task_id: int | None = None
+    audio_opts: dict = {
+        **common_opts,
+        "format": "bestaudio/best",
+    }
+    if convert_audio:
+        audio_opts["postprocessors"] = [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }
+        ]
 
-        def yt_dlp_monitor(d: dict):
-            nonlocal task_id
-            status = d.get("status")
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        DownloadColumn(),
+        TransferSpeedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        transient=True,
+    )
+    task_id = progress.add_task("正在提取字幕...", total=None)
 
-            if status == "downloading":
-                total = d.get("total_bytes") or d.get("total_bytes_estimate")
-                downloaded = d.get("downloaded_bytes") or 0
-
-                if task_id is None:
-                    task_id = progress.add_task("正在下载...", total=total or 0)
-
-                if total:
-                    progress.update(task_id, total=total, completed=downloaded)
-                else:
-                    progress.update(task_id, completed=downloaded)
-
-            elif status == "finished":
-                if task_id is None:
-                    task_id = progress.add_task(
-                        "[bold green]下载完成，正在处理文件...[/bold green]", total=1
-                    )
-                progress.update(
-                    task_id, description="[bold green]下载完成，正在处理文件...[/bold green]"
-                )
-
-        ydl_opts = dict(opts)
-        ydl_opts["progress_hooks"] = [yt_dlp_monitor]
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            with progress:
-                info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-        return info, filename
-
-    # 2) 第一次尝试（尝试获取字幕）
-    try:
-        info, filename = run_download({**base_opts, **sub_opts})
-
-        final_filepath = Path(filename).with_suffix(".mp3")
-        metadata = extract_metadata(info, url)
-
+    def find_subtitle_text(base_filename: str) -> str | None:
         subtitle_text: str | None = None
-        base_filename = os.path.splitext(filename)[0]
         candidates = glob.glob(f"{base_filename}.*")
         subtitle_files = [p for p in candidates if p.lower().endswith((".vtt", ".srt"))]
 
@@ -184,22 +156,95 @@ def download_audio(url: str) -> tuple[str | None, str | None, dict]:
             except Exception:
                 pass
 
-        return str(final_filepath.absolute()), subtitle_text, metadata
+        return subtitle_text
 
-    # 3) 捕获异常与降级（核心修复）
-    except Exception as e:
-        error_msg = str(e).lower()
-        if ("429" in error_msg) or ("too many requests" in error_msg) or ("subtitles" in error_msg):
-            console.print(
-                "\n[bold yellow]⚠️ YouTube 限制了字幕获取 (429)，已自动降级：跳过字幕，采用纯音频+AI听写模式...[/bold yellow]"
+    def run_download(
+        opts: dict,
+        *,
+        show_progress: bool,
+        should_download: bool = True,
+    ) -> tuple[dict, str]:
+        """
+        所有下载相关阶段复用同一个 Progress，避免堆叠多条进度条。
+        """
+        def yt_dlp_monitor(d: dict):
+            status = d.get("status")
+
+            if status == "downloading":
+                total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                downloaded = d.get("downloaded_bytes") or 0
+                if total:
+                    progress.update(task_id, description="正在下载音频...", total=total, completed=downloaded)
+                else:
+                    progress.update(task_id, description="正在下载音频...", completed=downloaded)
+
+            elif status == "finished":
+                progress.update(
+                    task_id,
+                    description="[bold green]下载完成，正在处理文件...[/bold green]",
+                )
+
+        def postprocessor_monitor(d: dict):
+            postprocessor = d.get("postprocessor", "")
+            status = d.get("status")
+            if status == "started" and postprocessor == "ExtractAudio":
+                progress.update(task_id, description="正在转换音频为 mp3...")
+
+        ydl_opts = dict(opts)
+        if show_progress:
+            ydl_opts["progress_hooks"] = [yt_dlp_monitor]
+        if convert_audio:
+            ydl_opts["postprocessor_hooks"] = [postprocessor_monitor]
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=should_download)
+            filename = ydl.prepare_filename(info)
+        return info, filename
+
+    def has_subtitle_tracks(info: dict) -> bool:
+        subtitles = info.get("subtitles") or {}
+        automatic_captions = info.get("automatic_captions") or {}
+        preferred_langs = ("zh-Hans", "zh-Hant", "zh-CN", "zh-TW", "zh", "en")
+        return any(lang in subtitles or lang in automatic_captions for lang in preferred_langs)
+
+    with progress:
+        # 2) 第一次尝试：先快速探测是否存在字幕轨道
+        try:
+            progress.update(task_id, description="正在提取字幕...", total=None, completed=0)
+            info, filename = run_download(
+                subtitle_probe_opts,
+                show_progress=False,
+                should_download=False,
             )
-
-            info, filename = run_download(base_opts)
-            final_filepath = Path(filename).with_suffix(".mp3")
             metadata = extract_metadata(info, url)
-            return str(final_filepath.absolute()), None, metadata
+            if has_subtitle_tracks(info):
+                info, filename = run_download(
+                    subtitle_download_opts,
+                    show_progress=False,
+                    should_download=True,
+                )
+                base_filename = os.path.splitext(filename)[0]
+                subtitle_text = find_subtitle_text(base_filename)
 
-        raise e
+                if subtitle_text:
+                    progress.update(task_id, description="[bold green]字幕下载成功[/bold green]")
+                    return None, subtitle_text, metadata, "subtitle"
+
+        # 3) 字幕异常时静默降级到音频；无字幕本身属于正常情况
+        except Exception as e:
+            error_msg = str(e).lower()
+            if ("429" in error_msg) or ("too many requests" in error_msg) or ("subtitles" in error_msg):
+                console.print(
+                    "\n[bold yellow]⚠️ 字幕获取失败，已自动降级：跳过字幕，采用纯音频+AI听写模式...[/bold yellow]"
+                )
+
+        # 4) 第二次尝试：只在确实没有可用字幕时下载音频
+        progress.update(task_id, description="正在下载音频...", total=0, completed=0)
+        info, filename = run_download(audio_opts, show_progress=True, should_download=True)
+        final_filepath = Path(filename).with_suffix(".mp3") if convert_audio else Path(filename)
+        metadata = extract_metadata(info, url)
+        progress.update(task_id, description="[bold green]音频下载成功[/bold green]")
+        return str(final_filepath.absolute()), None, metadata, "audio"
 
 
 def extract_metadata(info: dict, original_url: str) -> dict:

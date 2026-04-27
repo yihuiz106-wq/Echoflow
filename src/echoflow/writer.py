@@ -68,6 +68,33 @@ def save_markdown(metadata: dict, description: str, content: str, output_dir: st
         raise Exception(f"保存 Markdown 文件失败: {e}")
 
 
+def save_transcript(metadata: dict, transcript: str, output_dir: str = None) -> str:
+    """
+    保存原始转录文本到指定目录，不做 AI 总结或二次加工。
+    """
+    try:
+        if output_dir:
+            output_path = Path(output_dir)
+        else:
+            env_dir = os.getenv("OUTPUT_DIR", "./output")
+            output_path = Path(env_dir)
+
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        title = metadata.get("title", "Untitled")
+        filename = sanitize_filename(f"{title}_transcript") + ".txt"
+        filepath = handle_filename_conflict(output_path / filename)
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(transcript)
+
+        return str(filepath.absolute())
+
+    except Exception as e:
+        print(f"✗ 保存转录文本失败: {e}")
+        raise Exception(f"保存转录文本失败: {e}")
+
+
 def sanitize_filename(filename: str, max_length: int = 200) -> str:
     """清理文件名,移除非法字符"""
     illegal_chars = r'[<>:"/\\|?*]'
@@ -105,13 +132,13 @@ def build_frontmatter(metadata: dict, description: str) -> str:
     
     author = metadata.get('author', 'Unknown')
     url = metadata.get('url', '')
-    published = metadata.get('upload_date', datetime.now().strftime('%Y-%m-%d')) # yt-dlp 通常用 upload_date
+    published = metadata.get('published', datetime.now().strftime('%Y-%m-%d'))
     tags = metadata.get('tags', [])
     if not tags:
         tags = ['clippings', 'echoflow']
     
     # 额外字段
-    platform = metadata.get('extractor', 'unknown') # yt-dlp 字段为 extractor
+    platform = metadata.get('source_domain', 'unknown')
     duration = metadata.get('duration', 0)
     
     # 格式化标签列表 (简单的处理，实际可能需要更复杂的转义)

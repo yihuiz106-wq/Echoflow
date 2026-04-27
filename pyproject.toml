@@ -14,7 +14,7 @@ dependencies = [
     "typer",
     "rich",
     "yt-dlp",
-    "google-generativeai",
+    "openai",
     "python-dotenv",
 ]
 
