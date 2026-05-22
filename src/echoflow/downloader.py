@@ -9,11 +9,14 @@ Echoflow CLI - Audio Downloader Module (Temp/Cache Version)
 """
 
 import glob
+import io
 import os
 import re
 import tempfile
+from contextlib import redirect_stderr
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import yt_dlp
 from rich.console import Console
@@ -71,6 +74,70 @@ def clean_subtitle(file_path: str) -> str:
     return text
 
 
+def normalize_video_url(raw: str) -> str:
+    """
+    规范化用户输入的链接，兼容常见分享格式：
+    - Markdown 链接: [title](https://...)
+    - 带文案的分享文本: xxx https://... yyy
+    - 包裹符号: <https://...>、中文括号、中文引号
+    - 未带 scheme 的 www 链接
+    - 纯 BV / av / YouTube video id
+    """
+    if not raw or not raw.strip():
+        raise ValueError("视频链接不能为空")
+
+    s = raw.strip()
+    s = s.replace("\\/", "/")
+    s = re.sub(r"\\([?&=#])", r"\1", s)
+
+    markdown_match = re.search(r"\[[^\]]*\]\((https?://[^)\s]+)\)", s, re.IGNORECASE)
+    if markdown_match:
+        s = markdown_match.group(1)
+    else:
+        url_match = re.search(r"(https?://[^\s<>\u3000]+|www\.[^\s<>\u3000]+)", s, re.IGNORECASE)
+        if url_match:
+            s = url_match.group(1)
+
+    s = s.strip().strip("<>[](){}\"'“”‘’「」『』，。；！？、")
+    if s.startswith("www."):
+        s = f"https://{s}"
+
+    # 兼容直接粘贴 BV / av / YouTube 视频 ID
+    if re.fullmatch(r"BV[0-9A-Za-z]{10}", s):
+        return f"https://www.bilibili.com/video/{s}"
+    if re.fullmatch(r"av\d+", s, re.IGNORECASE):
+        return f"https://www.bilibili.com/video/{s}"
+    if re.fullmatch(r"[0-9A-Za-z_-]{11}", s):
+        return f"https://www.youtube.com/watch?v={s}"
+
+    parsed = urlparse(s)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(
+            "无法识别视频链接。请直接粘贴完整的 Bilibili / YouTube 链接，"
+            "或使用 BV 号、av 号、YouTube 视频 ID。"
+        )
+
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    filtered_query = []
+    for key, value in query_pairs:
+        if key.lower().startswith("utm_"):
+            continue
+        if key in {"si", "feature", "spm_id_from", "from_spmid"}:
+            continue
+        filtered_query.append((key, value))
+
+    normalized_path = parsed.path.replace("\\", "")
+    if normalized_path.endswith("/") and "/video/" in normalized_path:
+        normalized_path = normalized_path.rstrip("/")
+
+    return urlunparse(
+        parsed._replace(
+            path=normalized_path,
+            query=urlencode(filtered_query, doseq=True),
+        )
+    )
+
+
 def download_audio(
     url: str,
     *,
@@ -83,6 +150,8 @@ def download_audio(
     Returns:
         (audio_path, subtitle_text, metadata, transcript_source)
     """
+    normalized_url = normalize_video_url(url)
+
     temp_dir = Path(tempfile.gettempdir()) / "echoflow_cache"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -95,6 +164,7 @@ def download_audio(
         "quiet": True,
         "noprogress": True,
         "no_warnings": True,
+        "no_color": True,
         "logger": None,
     }
 
@@ -197,7 +267,8 @@ def download_audio(
             ydl_opts["postprocessor_hooks"] = [postprocessor_monitor]
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=should_download)
+            with redirect_stderr(io.StringIO()):
+                info = ydl.extract_info(normalized_url, download=should_download)
             filename = ydl.prepare_filename(info)
         return info, filename
 
@@ -216,7 +287,7 @@ def download_audio(
                 show_progress=False,
                 should_download=False,
             )
-            metadata = extract_metadata(info, url)
+            metadata = extract_metadata(info, normalized_url)
             if has_subtitle_tracks(info):
                 info, filename = run_download(
                     subtitle_download_opts,
@@ -242,7 +313,7 @@ def download_audio(
         progress.update(task_id, description="正在下载音频...", total=0, completed=0)
         info, filename = run_download(audio_opts, show_progress=True, should_download=True)
         final_filepath = Path(filename).with_suffix(".mp3") if convert_audio else Path(filename)
-        metadata = extract_metadata(info, url)
+        metadata = extract_metadata(info, normalized_url)
         progress.update(task_id, description="[bold green]音频下载成功[/bold green]")
         return str(final_filepath.absolute()), None, metadata, "audio"
 

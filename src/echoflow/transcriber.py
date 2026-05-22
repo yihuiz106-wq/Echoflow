@@ -7,9 +7,10 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
+from echoflow.config import CONFIG_PATH
 
-# 加载环境变量
-load_dotenv()
+# 优先加载用户配置，避免项目根目录里的旧 .env 抢占配置
+load_dotenv(CONFIG_PATH, override=True)
 
 
 def transcribe_audio(audio_path: str) -> str:
@@ -32,7 +33,7 @@ def transcribe_audio(audio_path: str) -> str:
     if not api_key:
         raise ValueError(
             "未找到 SILICONFLOW_API_KEY 环境变量。\n"
-            "请在 .env 文件中配置: SILICONFLOW_API_KEY=你的API密钥"
+            "请运行 `echoflow init`，或检查 ~/.echoflow_env 中的 SILICONFLOW_API_KEY"
         )
     
     # 验证文件存在

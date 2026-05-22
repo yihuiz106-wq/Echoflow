@@ -1,135 +1,263 @@
-# EchoFlow
+# Echoflow
 
-![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
-![AI-Generated](https://img.shields.io/badge/Code_by-AI-FF69B4)
-![Lazy-Dev](https://img.shields.io/badge/PyPI-Too_Troublesome-red)
+`Echoflow` 是一个面向 `Typora` 工作流的命令行工具：给它一个 Bilibili 或 YouTube 链接，它会尽量先提取字幕；如果没有可用字幕，再下载音频做语音转录；最后可选择输出原始转录文本，或整理成一篇适合直接阅读的 Markdown 文稿。
 
-> **视频转笔记，一行命令搞定。**
-> *（注：本项目代码均由 AI 生成， 包括这个README文档，我只负责提需求和偷懒。）*
+当前版本的核心目标很明确：
 
-## 这是个啥？
+- 把视频内容尽快变成可读、可存档的本地文件
+- 优先复用平台现成字幕，减少转录成本和等待时间
+- 输出结构对 `Typora` 友好，而不是为 Obsidian frontmatter 做优化
+- 尽量保持命令简单，不把一堆模型和提供商配置暴露给用户
 
-EchoFlow 是一个为 **Obsidian 用户** 设计的命令行工具。
+## 功能概览
 
-它可以把 Bilibili 或 YouTube 视频变成一篇格式完美的 Markdown 笔记，自动包含元数据、视频简介和 AI 总结；也可以只输出识别出来的原始文本。
+- 支持 `Bilibili`、`YouTube` 以及常见分享链接格式
+- 自动清洗链接，兼容 `BV` 号、`av` 号、YouTube 视频 ID
+- 优先下载现成字幕；没有字幕时自动降级为音频转录
+- 使用 `SiliconFlow` 的 `FunAudioLLM/SenseVoiceSmall` 做 ASR
+- 使用 `DeepSeek V4 Pro` 把转录整理成 Markdown 文稿
+- 摘要区域默认输出为 Typora 原生 `NOTE` alert
+- 支持只导出原始转录文本，不做 AI 总结
+- 支持配置输出语言，例如 `中文` 或 `English`
+- 支持单独更新当前环境里的 `yt-dlp`
 
-### ⚠️ 极其“固执”的设计哲学 (必读)
+## 当前工作流
 
-为了保持代码极其简单（其实是我懒得写适配），本项目 **强制** 绑定了以下技术栈，**暂不支持配置其他模型**：
+### `echoflow run`
 
-1.  **语音转文字 (ASR)**: 只能用 **SiliconFlow (硅基流动)** 的 API。
-    * 默认模型：`FunAudioLLM/SenseVoiceSmall`
-    * *原因：Gemini认为这个巨快，且这东西巨便宜。*
-2.  **AI 总结 (LLM)**: 只能用 **DeepSeek (深度求索)** 的 API。
-    * 默认模型：`deepseek-reasoner` (R1)
-    * *原因：Deepseek可便宜，用reasoner是为了防止语音识别质量太差导致总结出一坨不知所云的东西*
+完整流程：
 
-## 📦 安装与配置
+1. 解析并清洗视频链接
+2. 用 `yt-dlp` 探测字幕轨道
+3. 如果有字幕，直接下载并清洗字幕文本
+4. 如果没有可用字幕，下载音频并调用 `SiliconFlow` 做转录
+5. 把文本交给 `DeepSeek` 生成结构化 Markdown
+6. 保存为本地 `.md` 文件
 
-本项目基于 Python 3.9+。为了不污染你的系统环境，推荐使用虚拟环境安装。
+生成的 Markdown 现在大致长这样：
 
-### 1. 克隆与依赖安装
+```md
+# 视频标题
 
-```bash
-# 1. 下载代码
-git clone [https://github.com/your-username/echoflow.git](https://github.com/your-username/echoflow.git)
-cd echoflow
+> 作者：...
+> 发布日期：...
+> 平台：...
+> 时长：...
+> 生成时间：...
+> 链接：https://...
 
-# 2. 创建并激活虚拟环境 (推荐)
-python3 -m venv .venv
-source .venv/bin/activate  # Windows 用户请使用: .venv\Scripts\activate
+> [!NOTE]
+> 这里是摘要。
 
-# 3. 安装依赖 (开发者模式)
-pip install -e .
+## 正文
 
+正文内容……
 ```
 
-如果你移动过项目目录，或者发现 `.venv/bin/echoflow` 报 shebang 路径错误，直接在项目根目录重新执行一次：
+### `echoflow transcript`
+
+这个命令只负责：
+
+1. 提取字幕，或下载音频后转录
+2. 把原始文本保存为 `.txt`
+
+它不会调用 `DeepSeek`，适合你只想拿到转录文本的时候用。
+
+## 依赖与限制
+
+项目目前是“固定服务提供商”设计，不支持在 CLI 里切换模型或供应商：
+
+- 语音转录：`SiliconFlow`
+- 文稿整理：`DeepSeek`
+
+需要你自行准备：
+
+- `SiliconFlow API Key`
+- `DeepSeek API Key`
+- 可写入的本地输出目录
+
+系统要求：
+
+- `Python 3.9+`
+- 建议本机可用 `ffmpeg`
+
+说明：
+
+- 如果视频有字幕，通常不会走音频转录，所以对 `ffmpeg` 的依赖也更弱
+- 如果需要把音频转成 `mp3`，或者平台返回的原始格式不适合直接处理，`ffmpeg` 会更稳
+
+## 安装
+
+建议使用虚拟环境：
+
+```bash
+git clone https://github.com/your-username/echoflow.git
+cd echoflow
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install -e .
+```
+
+如果你移动过项目目录，导致虚拟环境里 `echoflow` 的 shebang 失效，可以在项目根目录重新执行一次：
 
 ```bash
 .venv/bin/python -m pip install -e . --no-deps
 ```
 
-### 2. ⚡️ 让命令全局可用 (关键步骤)
+## 初始化
 
-默认情况下，你只能在激活虚拟环境后使用 `echoflow` 命令。
-**如果你想在任何地方都能直接敲 `echoflow` 运行**，请将以下“魔法别名”添加到你的 Shell 配置文件（`.zshrc` 或 `.bashrc`）中：
-
-```bash
-# 打开你的配置文件 (以 zsh 为例)
-nano ~/.zshrc
-
-# 在文件末尾添加这一行 (请确保你当前在 echoflow 项目根目录下)
-# 注意：把下面的 /path/to/echoflow 替换成你实际的 echoflow 目录路径
-alias echoflow="/path/to/echoflow/.venv/bin/echoflow"
-
-# 保存退出，然后让配置生效
-source ~/.zshrc
-
-```
-
-> **极客小贴士**：
-> 如果你懒得找路径，直接在 echoflow 项目根目录下运行这就行：
-> `echo "alias echoflow=\"$PWD/.venv/bin/echoflow\"" >> ~/.zshrc && source ~/.zshrc`
-
-## 🚀 极速上手
-
-### 1. 初始化 (仅需一次)
+第一次使用先运行：
 
 ```bash
 echoflow init
-
 ```
 
-*(程序会自动引导你配置 API Key)*
+它会引导你填写：
 
-### 2. 验证安装
+- `SiliconFlow API Key`
+- `DeepSeek API Key`
+- 输出目录
+
+配置会保存到：
 
 ```bash
-# 看看是不是装好了
-which echoflow
-# 输出类似: .../echoflow/.venv/bin/echoflow 即为成功
+~/.echoflow_env
 ```
 
-### 3. 开始剪藏
+## 常用命令
+
+### 生成 Markdown 文稿
 
 ```bash
-echoflow run "[https://www.bilibili.com/video/BV1xxxxxx](https://www.bilibili.com/video/BV1xxxxxx)"
+echoflow run "https://www.bilibili.com/video/BV1xxxxxx"
 ```
 
-### 4. 只导出识别文本
+### 只导出原始转录文本
 
 ```bash
 echoflow transcript "https://www.youtube.com/watch?v=xxxxxx"
 ```
 
-这个命令会：
-- 优先提取视频自带字幕
-- 没有字幕时再调用 SiliconFlow 做语音识别
-- 最终保存为原始 `.txt` 文本，不做 DeepSeek 总结
+### 跳过 mp3 转码，直接使用原始音频
 
-
-🛠 常用命令
 ```bash
-# 哪怕是本地安装，也可以全局调用
-which echoflow
+echoflow run --raw "https://www.youtube.com/watch?v=xxxxxx"
+```
 
-# 如果你换了电脑或者重装了 Obsidian，想改保存路径
-echoflow config dir "/Users/me/New/Path"
+```bash
+echoflow transcript --raw "https://www.bilibili.com/video/BV1xxxxxx"
+```
 
-# 只输出转录文本
-echoflow transcript "https://www.youtube.com/watch?v=xxxxxx"
+### 修改配置
 
-# 看看帮助
+```bash
+echoflow config dir "/Users/me/Documents/Notes"
+echoflow config sf "your-siliconflow-key"
+echoflow config ds "your-deepseek-key"
+```
+
+其中缩写对应关系是：
+
+- `sf` -> `SILICONFLOW_API_KEY`
+- `ds` -> `DEEPSEEK_API_KEY`
+- `dir` -> `OUTPUT_DIR`
+
+### 设置输出语言
+
+```bash
+echoflow language 中文
+echoflow language English
+```
+
+这会影响最终 AI 整理后的笔记语言，不影响原始字幕或转录文本本身的语言。
+
+### 更新 `yt-dlp`
+
+```bash
+echoflow update-yt-dlp
+```
+
+当平台规则变化、下载突然失败、或字幕提取行为异常时，这个命令通常值得先跑一次。
+
+### 查看帮助
+
+```bash
 echoflow --help
 ```
 
-🤔 这个项目是怎么来的？
-如开头所说，这是一个 AI 辅助编程 的实验产物。
-我负责提出需求和“偷懒”，AI 负责写代码和解决 Bug。
+## 链接输入兼容性
 
-如果你觉得代码写得烂……那请去怪 AI，不要怪我。🙈
+Echoflow 会尽量容忍“随手粘贴”的输入，例如：
 
----
+- 完整视频链接
+- Markdown 链接，如 `[标题](https://...)`
+- 带文案的分享文本
+- `BV` 号
+- `av` 号
+- YouTube 11 位视频 ID
 
-Generated with ❤️ by Human & AI
+它还会自动清理一部分追踪参数，例如常见的 `utm_*`。
+
+## 输出文件说明
+
+### Markdown 文稿
+
+- 文件名默认使用视频标题
+- 自动处理重名冲突
+- 顶部附带作者、发布日期、平台、时长、生成时间和原始链接
+- 摘要区使用 Typora 原生 `NOTE` alert
+
+### 转录文本
+
+- 文件名默认是 `视频标题_transcript.txt`
+- 不做摘要，不做二次整理
+
+## 常见问题
+
+### 为什么有时候很快，有时候很慢？
+
+因为它会先尝试拿字幕。
+
+- 有字幕：通常很快
+- 没字幕：需要下载音频并走 ASR，再交给 LLM 整理，整体耗时会明显增加
+
+### 为什么 `transcript` 不需要 DeepSeek Key？
+
+因为 `transcript` 只负责拿到原始文本并保存，不做总结。
+
+### 为什么 `run` 有时仍然要求配置 SiliconFlow Key？
+
+如果视频本身没有可用字幕，`run` 会回退到音频转录，这时就需要 `SiliconFlow API Key`。
+
+### 输出目录可以后面再改吗？
+
+可以：
+
+```bash
+echoflow config dir "/new/output/path"
+```
+
+## 开发说明
+
+当前入口命令来自 `pyproject.toml` 中的脚本配置：
+
+```toml
+[project.scripts]
+echoflow = "echoflow.main:app"
+```
+
+本地开发常用方式：
+
+```bash
+source .venv/bin/activate
+pip install -e .
+echoflow --help
+```
+
+如果你只是想直接调试模块，也可以：
+
+```bash
+PYTHONPATH=src .venv/bin/python -m echoflow.main --help
+```

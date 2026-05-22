@@ -1,22 +1,24 @@
 """
 Echoflow CLI - AI Summary & Rewrite Module
-使用 DeepSeek Reasoner 模型 (通过 DeepSeek 官方 API) 进行智能总结与改写
+使用 DeepSeek V4 Pro 模型 (通过 DeepSeek 官方 API) 进行智能总结与改写
 """
 
 import os
 import json
 import re
+import ast
 from dotenv import load_dotenv
 from openai import OpenAI
+from echoflow.config import CONFIG_PATH
 
-# 加载环境变量
-load_dotenv()
+# 优先加载用户配置，避免项目根目录里的旧 .env 抢占配置
+load_dotenv(CONFIG_PATH, override=True)
 
 
 def generate_summary(text: str) -> tuple[str, str]:
     """
-    使用 DeepSeek Reasoner 模型对转录文本进行智能总结与改写
-    生成 Obsidian 风格的 Markdown 笔记
+    使用 DeepSeek V4 Pro 模型对转录文本进行智能总结与改写
+    生成偏论文式、适合在 Typora 中阅读的 Markdown 文稿
     
     Args:
         text: 原始转录文本
@@ -24,7 +26,7 @@ def generate_summary(text: str) -> tuple[str, str]:
     Returns:
         tuple: (description, content)
             - description (str): 一句话简介 (30-50字)
-            - content (str): Obsidian 风格的 Markdown 正文
+            - content (str): Typora 友好的 Markdown 正文
         
     Raises:
         ValueError: 当 API Key 未配置或输入文本为空时
@@ -37,7 +39,7 @@ def generate_summary(text: str) -> tuple[str, str]:
     if not api_key:
         raise ValueError(
             "未找到 DEEPSEEK_API_KEY 环境变量。\n"
-            "请在 .env 文件中配置: DEEPSEEK_API_KEY=你的API密钥"
+            "请运行 `echoflow init`，或检查 ~/.echoflow_env 中的 DEEPSEEK_API_KEY"
         )
     
     # 验证输入文本
@@ -52,28 +54,53 @@ def generate_summary(text: str) -> tuple[str, str]:
         )
         
         system_prompt = f"""
-你是一个专业的视频内容分析与整理专家。无论用户提供的转录文稿是什么语言，你都必须**强制使用 {target_lang}** 来输出最终结果。
+你是一位“知识问答类内容编辑”。你的任务是把视频转录文本改写成一篇结构清晰、可读性高的 Markdown 文稿。
 
-请阅读提供的视频转录文稿，并返回一段 JSON 格式的数据，包含 `description` 和 `content` 两个字段。
+无论输入文本是什么语言，你都必须强制使用 {target_lang} 输出。
 
-要求如下：
-1. **description**: 一句话概括视频核心内容（用于属性标签）。
-2. **content**: 一篇完整的markdown笔记，必须严格遵守以下要求：
-   - **总结块**: 开头必须使用 Obsidian Callout 语法 `> [!SUMMARY]` 将总结框起来，包含视频的要点，描述这个视频在干什么。
-   - **视频笔记**: 根据视频的内容生成一份高可读性的笔记
-   - **细节丰满**: 尽可能的包含足够多的细节！如果输入的文稿很长，生成的这篇详述文章也应该对应地写得非常长、非常详细。绝对不能只做简单敷衍的概括。
-   - **格式要求**: 每次换行或分段时，**必须空一行**（即段落之间必须有两个换行符 `\\n\\n`）。
-   - 不要包含 `<think>` 标签的内容。
+请返回一个 JSON 对象，且只包含两个字段：
+{{
+  "description": "...",
+  "content": "..."
+}}
+
+写作目标与风格：
+1. 整体风格要清楚、自然、有信息密度，接近高质量知识博主的讲解文风。
+2. 语气可以比学术写作更生动，但不能过度口语化，不要网络梗，不要夸张表达。
+3. 严禁添加原文没有明确支持的新事实、比喻、类比、故事或案例。
+4. 如果原文证据不足，宁可保守表达，也不要“脑补”。
+
+内容保真要求：
+1. 忠实保留原视频核心观点、推理链路和关键细节，不改变原意。
+2. 删除口头禅、重复、寒暄和无效停顿，但保留对理解有价值的信息。
+3. 对逻辑跳跃处进行整理与衔接，让读者不看视频也能理解。
+
+结构与可读性要求：
+1. `description` 写 60-120 字，概括主题、核心问题和结论。
+2. `content` 必须先输出一个 Markdown callout 摘要块：
+   第一行固定为 `> [!NOTE]`
+   后续摘要正文的每一行都放在 callout 内，并以 `> ` 开头
+   摘要块结束后，再进入正文
+3. 不要再输出 `## 摘要` 或 `## Abstract` 这样的单独大标题。
+4. 正文使用标准 Markdown 标题（`##` / `###`）组织。
+5. 每段尽量短：建议 1-3 句，优先 2 句；避免大段连续文本。
+6. 句子尽量短，减少长串并列和过多从句。
+7. 段落之间必须空行，确保 Typora 阅读舒适。
+
+输出协议要求：
+1. 不要输出代码块包裹 JSON。
+2. 不要输出 JSON 之外的任何解释性文字。
+3. 不要输出 `<think>` 标签或推理过程。
 """.strip()
 
-        # 调用 DeepSeek Reasoner API
+        # 调用 DeepSeek V4 Pro API
         response = client.chat.completions.create(
-            model="deepseek-reasoner",  # DeepSeek 官方推理模型
+            model="deepseek-v4-pro",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text}
             ],
-            temperature=0.6,  # 适中的创造性
+            temperature=0.45,  # 更稳健，减少过度发挥
             max_tokens=4000   # 确保有足够空间输出完整内容
         )
         
@@ -96,7 +123,7 @@ def generate_summary(text: str) -> tuple[str, str]:
     
     except Exception as e:
         error_message = str(e)
-        raise Exception(f"DeepSeek Reasoner API 调用失败: {error_message}")
+        raise Exception(f"DeepSeek V4 Pro API 调用失败: {error_message}")
 
 
 def strip_think_tags(content: str) -> str:
@@ -113,24 +140,163 @@ def parse_json_description_content(text: str) -> tuple[str, str]:
     支持返回内容前后夹杂少量非 JSON 文本的情况。
     """
     s = text.strip()
-    try:
-        obj = json.loads(s)
-        return str(obj.get("description", "")).strip(), str(obj.get("content", "")).strip()
-    except Exception:
-        pass
+    if not s:
+        return "", ""
+
+    candidates: list[str] = [s]
+
+    # 兼容 ```json ... ``` 包裹
+    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL | re.IGNORECASE)
+    if fenced_match:
+        candidates.insert(0, fenced_match.group(1).strip())
 
     # 容错：尝试截取最外层 JSON 对象
     start = s.find("{")
     end = s.rfind("}")
     if start != -1 and end != -1 and end > start:
-        candidate = s[start : end + 1]
-        try:
-            obj = json.loads(candidate)
-            return str(obj.get("description", "")).strip(), str(obj.get("content", "")).strip()
-        except Exception:
-            return "", ""
+        candidates.append(s[start : end + 1])
+
+    # 去重但保序
+    deduped_candidates: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in deduped_candidates:
+            deduped_candidates.append(candidate)
+
+    for candidate in deduped_candidates:
+        # 1) 严格 JSON
+        parsed = _parse_description_content_from_obj(candidate)
+        if parsed != ("", ""):
+            return parsed
+
+        # 2) 轻度清洗后的 JSON（如尾逗号、智能引号）
+        normalized = normalize_json_candidate(candidate)
+        parsed = _parse_description_content_from_obj(normalized)
+        if parsed != ("", ""):
+            return parsed
+
+        # 3) Python 字典风格容错
+        parsed = _parse_description_content_from_python_dict(candidate)
+        if parsed != ("", ""):
+            return parsed
+
+        parsed = _parse_description_content_from_python_dict(normalized)
+        if parsed != ("", ""):
+            return parsed
+
+        # 4) 最后兜底：宽松正则提取
+        parsed = extract_description_content_from_loose_json(candidate)
+        if parsed != ("", ""):
+            return parsed
+
+        parsed = extract_description_content_from_loose_json(normalized)
+        if parsed != ("", ""):
+            return parsed
 
     return "", ""
+
+
+def _parse_description_content_from_obj(payload: str) -> tuple[str, str]:
+    try:
+        obj = json.loads(payload)
+    except Exception:
+        return "", ""
+
+    if not isinstance(obj, dict):
+        return "", ""
+
+    return str(obj.get("description", "")).strip(), str(obj.get("content", "")).strip()
+
+
+def _parse_description_content_from_python_dict(payload: str) -> tuple[str, str]:
+    try:
+        obj = ast.literal_eval(payload)
+    except Exception:
+        return "", ""
+
+    if not isinstance(obj, dict):
+        return "", ""
+
+    return str(obj.get("description", "")).strip(), str(obj.get("content", "")).strip()
+
+
+def normalize_json_candidate(payload: str) -> str:
+    s = payload.strip()
+    if not s:
+        return s
+
+    # 智能引号转半角，减少解析失败
+    s = (
+        s.replace("“", '"')
+        .replace("”", '"')
+        .replace("‘", "'")
+        .replace("’", "'")
+    )
+
+    # 移除对象/数组前的尾逗号（JSON 常见错误）
+    s = re.sub(r",(\s*[}\]])", r"\1", s)
+    return s
+
+
+def extract_description_content_from_loose_json(payload: str) -> tuple[str, str]:
+    description = extract_loose_value(payload, "description")
+    content = extract_loose_value(payload, "content")
+    return description, content
+
+
+def extract_loose_value(text: str, key: str) -> str:
+    key_pattern = re.compile(rf'["\']{re.escape(key)}["\']\s*:\s*', re.IGNORECASE)
+    key_match = key_pattern.search(text)
+    if not key_match:
+        return ""
+
+    i = key_match.end()
+    length = len(text)
+    while i < length and text[i].isspace():
+        i += 1
+    if i >= length:
+        return ""
+
+    # 支持字符串值（含转义）与非字符串值（兜底）
+    if text[i] in {"'", '"'}:
+        quote = text[i]
+        i += 1
+        buf: list[str] = []
+        escaped = False
+        while i < length:
+            ch = text[i]
+            if escaped:
+                buf.append(ch)
+                escaped = False
+                i += 1
+                continue
+            if ch == "\\":
+                escaped = True
+                buf.append(ch)
+                i += 1
+                continue
+            if ch == quote:
+                break
+            buf.append(ch)
+            i += 1
+        raw_value = "".join(buf)
+    else:
+        j = i
+        while j < length and text[j] not in ",}":
+            j += 1
+        raw_value = text[i:j]
+
+    return decode_loose_string(raw_value).strip()
+
+
+def decode_loose_string(s: str) -> str:
+    # 仅做最常见转义恢复，避免误伤中文
+    return (
+        s.replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\t", "\t")
+        .replace('\\"', '"')
+        .replace("\\'", "'")
+    )
 
 
 def split_description_and_content(text: str) -> tuple[str, str]:
@@ -159,9 +325,18 @@ def split_description_and_content(text: str) -> tuple[str, str]:
     if not description:
         # 尝试从内容中提取第一个非空段落作为简介
         for line in lines:
-            if line.strip() and not line.strip().startswith('>') and not line.strip().startswith('#'):
-                description = line.strip()[:100]  # 截取前100字符
-                break
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # 避免把 JSON 骨架误判为简介
+            if stripped in {"{", "}"}:
+                continue
+            if stripped.startswith((">", "#", '"description"', '"content"', "'description'", "'content'")):
+                continue
+            if stripped.endswith((": {", ":")) and stripped.lower().startswith(("description", "content")):
+                continue
+            description = stripped[:100]  # 截取前100字符
+            break
         
         if not description:
             description = "视频内容总结与分析"
@@ -240,7 +415,7 @@ def generate_summary_with_custom_prompt(text: str, custom_prompt: str) -> tuple[
         print(f"正在使用自定义 Prompt 生成内容...")
         
         response = client.chat.completions.create(
-            model="deepseek-reasoner",
+            model="deepseek-v4-pro",
             messages=[
                 {"role": "system", "content": custom_prompt},
                 {"role": "user", "content": text}

@@ -4,10 +4,15 @@ Echoflow CLI - Main Entry Point
 """
 
 import os
+import re
+import subprocess
+import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 
 # 导入配置模块
 from echoflow import config
@@ -24,17 +29,49 @@ app = typer.Typer(help="Echoflow CLI - 视频转文字 + AI 总结工具")
 console = Console()
 
 
+def print_header(title: str, subtitle: str | None = None) -> None:
+    body = title if not subtitle else f"{title}\n[dim]{subtitle}[/dim]"
+    console.print(Panel.fit(body, border_style="cyan"))
+
+
+def print_step(message: str) -> None:
+    console.print(f"[cyan]•[/cyan] {message}")
+
+
+def print_success(message: str) -> None:
+    console.print(f"[bold green]✓[/bold green] {message}")
+
+
+def print_warning(message: str) -> None:
+    console.print(f"[bold yellow]![/bold yellow] {message}")
+
+
+def print_error(message: str) -> None:
+    console.print(f"[bold red]✗[/bold red] {message}")
+
+
+def get_package_version(package_name: str) -> str:
+    try:
+        return version(package_name)
+    except PackageNotFoundError:
+        return "not installed"
+
+
+def clean_terminal_text(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*m", "", text or "").strip()
+
+
 def ensure_config(required_keys: tuple[str, ...], hint_command: str) -> None:
     if config.load_config(required_keys=required_keys):
         return
 
-    console.print("[bold yellow]⚠️ 尚未完成当前命令所需配置。[/bold yellow]")
+    print_warning("尚未完成当前命令所需配置。")
     if typer.confirm("是否现在进行初始化?", default=True):
         config.init_config()
         if config.load_config(required_keys=required_keys):
             return
 
-    console.print(f"[red]程序退出。请先运行 `{hint_command}` 或补齐配置。[/red]")
+    print_error(f"程序退出。请先运行 `{hint_command}` 或补齐配置。")
     raise typer.Exit(code=1)
 
 
@@ -59,13 +96,12 @@ def fetch_transcript(url: str, *, convert_audio: bool = True) -> tuple[dict, str
         )
 
         if subtitle_text:
-            console.print("[green]✓[/green] 字幕下载成功")
+            print_success("已提取视频字幕")
             return metadata, subtitle_text
 
         if transcript_source == "audio":
-            console.print("[green]✓[/green] 音频下载成功")
-        console.print("[bold cyan]正在上传音频到 SiliconFlow...[/bold cyan]")
-        console.print(f"[dim]{Path(audio_path).name} · {format_file_size(audio_path)}[/dim]")
+            print_success("已下载音频")
+        print_step(f"上传音频到 SiliconFlow: {Path(audio_path).name} · {format_file_size(audio_path)}")
         transcript = transcribe_audio(audio_path)
         return metadata, transcript
 
@@ -121,11 +157,11 @@ def config_update(
     try:
         # 确保路径转换为字符串，并指定不使用引号模式
         set_key(str(config.CONFIG_PATH), env_key, final_value, quote_mode="never")
-        
-        console.print(f"✅ [bold green]配置已更新:[/bold green]")
-        console.print(f"   [cyan]{env_key}[/cyan] = [white]{final_value}[/white]")
+
+        print_success("配置已更新")
+        console.print(f"[dim]{env_key} = {final_value}[/dim]")
     except Exception as e:
-        console.print(f"[bold red]写入失败: {e}[/bold red]")
+        print_error(f"写入失败: {e}")
 
 @app.command("language")
 def language(
@@ -136,7 +172,7 @@ def language(
     """
     raw = (target_lang or "").strip()
     if not raw:
-        console.print("[bold red]语言不能为空[/bold red]")
+        print_error("语言不能为空")
         raise typer.Exit(code=1)
 
     normalized = raw
@@ -147,6 +183,41 @@ def language(
         normalized = "中文"
 
     set_language(normalized)
+
+
+@app.command("update-yt-dlp", help="更新当前虚拟环境里的 yt-dlp")
+def update_yt_dlp():
+    """
+    更新当前 Python 环境中的 yt-dlp 包。
+    """
+    current_version = get_package_version("yt-dlp")
+    print_header("Update yt-dlp", f"当前版本: {current_version}")
+    print_step(f"使用解释器: {sys.executable}")
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as e:
+        print_error(f"无法启动更新命令: {e}")
+        raise typer.Exit(code=1)
+
+    if result.returncode != 0:
+        error_text = (result.stderr or result.stdout or "").strip()
+        print_error("yt-dlp 更新失败")
+        if error_text:
+            console.print(f"[dim]{error_text}[/dim]")
+        raise typer.Exit(code=1)
+
+    new_version = get_package_version("yt-dlp")
+    print_success(f"yt-dlp 已更新到 {new_version}")
+    output_text = (result.stdout or "").strip()
+    if output_text:
+        last_line = output_text.splitlines()[-1]
+        console.print(f"[dim]{last_line}[/dim]")
 
 @app.command(name="run", help="开始处理: 下载 -> 转录 -> 总结")
 def main(
@@ -166,21 +237,23 @@ def main(
     output_dir = os.getenv("OUTPUT_DIR")
 
     try:
-        console.print("[bold cyan]Echoflow[/bold cyan]")
+        print_header("Echoflow", "下载、转录并整理视频内容")
+        print_step("开始获取视频内容")
 
         metadata, transcript = fetch_transcript(url, convert_audio=not raw)
 
         with console.status(
-            "[bold cyan]正在生成总结...[/bold cyan]"
+            "[bold cyan]正在整理文稿...[/bold cyan]"
         ):
             description, content = generate_summary(transcript)
 
         final_path = save_markdown(metadata, description, content, output_dir=output_dir)
 
-        console.print(f"[bold green]✓ 已保存[/bold green] [link=file://{Path(final_path).absolute()}]{final_path}[/link]")
+        print_success("文稿已保存")
+        console.print(f"[link=file://{Path(final_path).absolute()}]{final_path}[/link]")
 
     except Exception as e:
-        console.print(f"\n[bold red]❌ 运行失败: {str(e)}[/bold red]")
+        print_error(f"运行失败: {clean_terminal_text(str(e))}")
         console.print("[dim]提示: 请检查网络连接、视频链接是否有效，或 API 余额是否充足。[/dim]")
         raise typer.Exit(code=1)
 
@@ -201,16 +274,18 @@ def transcript_only(
     output_dir = os.getenv("OUTPUT_DIR")
 
     try:
-        console.print("[bold cyan]Echoflow Transcript[/bold cyan]")
+        print_header("Echoflow Transcript", "下载并导出原始转录文本")
+        print_step("开始获取视频内容")
 
         metadata, transcript = fetch_transcript(url, convert_audio=not raw)
 
         final_path = save_transcript(metadata, transcript, output_dir=output_dir)
 
-        console.print(f"[bold green]✓ 已保存[/bold green] [link=file://{Path(final_path).absolute()}]{final_path}[/link]")
+        print_success("转录文本已保存")
+        console.print(f"[link=file://{Path(final_path).absolute()}]{final_path}[/link]")
 
     except Exception as e:
-        console.print(f"\n[bold red]❌ 运行失败: {str(e)}[/bold red]")
+        print_error(f"运行失败: {clean_terminal_text(str(e))}")
         console.print("[dim]提示: 请检查网络连接、视频链接是否有效，或 API 余额是否充足。[/dim]")
         raise typer.Exit(code=1)
 

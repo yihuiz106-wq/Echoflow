@@ -3,6 +3,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv, set_key
 from rich.console import Console
+from rich.panel import Panel
 from rich.prompt import Prompt
 
 console = Console()
@@ -30,12 +31,12 @@ def init_config():
     """
     初始化配置并写入文件
     """
-    console.rule("[bold blue]Echoflow 初始化配置[/bold blue]")
+    console.print(Panel.fit("Echoflow Init\n[dim]配置 API Key 与输出目录[/dim]", border_style="cyan"))
     
     silicon_key = Prompt.ask("🔑 SiliconFlow API Key")
     deepseek_key = Prompt.ask("🔑 DeepSeek API Key")
     
-    console.print("📂 请拖入笔记保存文件夹:")
+    console.print("[cyan]•[/cyan] 请拖入或粘贴笔记保存文件夹路径")
     raw_path = Prompt.ask("Path")
     output_dir = clean_path(raw_path)
 
@@ -48,8 +49,8 @@ def init_config():
     set_key(str(CONFIG_PATH), "OUTPUT_DIR", output_dir, quote_mode="never")
     set_key(str(CONFIG_PATH), "OUTPUT_LANGUAGE", "中文", quote_mode="never")
     
-    console.print(f"\n✅ 配置已保存至: {CONFIG_PATH}")
-    console.print(f"📝 最终路径: [bold cyan]{output_dir}[/bold cyan]")
+    console.print(f"[bold green]✓[/bold green] 配置已保存至 {CONFIG_PATH}")
+    console.print(f"[dim]输出目录: {output_dir}[/dim]")
 
 def set_language(lang: str):
     """
@@ -57,12 +58,12 @@ def set_language(lang: str):
     """
     CONFIG_PATH.touch(mode=0o600, exist_ok=True)
     set_key(str(CONFIG_PATH), "OUTPUT_LANGUAGE", lang, quote_mode="never")
-    console.print(f"✅ [bold green]输出语言已更新:[/bold green] [cyan]{lang}[/cyan]")
+    console.print(f"[bold green]✓[/bold green] 输出语言已更新为 [cyan]{lang}[/cyan]")
 
 def load_config(required_keys: tuple[str, ...] | None = None) -> bool:
     if not CONFIG_PATH.exists():
         return False
     # 加载时 python-dotenv 会自动处理带空格的路径
-    load_dotenv(CONFIG_PATH)
+    load_dotenv(CONFIG_PATH, override=True)
     keys = required_keys or ("SILICONFLOW_API_KEY", "DEEPSEEK_API_KEY", "OUTPUT_DIR")
     return all(os.getenv(k) for k in keys)
