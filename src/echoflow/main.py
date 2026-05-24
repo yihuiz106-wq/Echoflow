@@ -50,6 +50,12 @@ def print_error(message: str) -> None:
     console.print(f"[bold red]✗[/bold red] {message}")
 
 
+def print_video_title(metadata: dict) -> None:
+    title = (metadata or {}).get("title", "").strip()
+    if title:
+        console.print(f"[dim]标题：{title}[/dim]")
+
+
 def get_package_version(package_name: str) -> str:
     try:
         return version(package_name)
@@ -94,6 +100,8 @@ def fetch_transcript(url: str, *, convert_audio: bool = True) -> tuple[dict, str
             url,
             convert_audio=convert_audio,
         )
+
+        print_video_title(metadata)
 
         if subtitle_text:
             print_success("已提取视频字幕")
