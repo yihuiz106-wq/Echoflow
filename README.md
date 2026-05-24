@@ -1,43 +1,50 @@
 # Echoflow
 
-`Echoflow` 是一个面向 `Typora` 工作流的命令行工具：给它一个 Bilibili 或 YouTube 链接，它会尽量先提取字幕；如果没有可用字幕，再下载音频做语音转录；最后可选择输出原始转录文本，或整理成一篇适合直接阅读的 Markdown 文稿。
+Turn Bilibili or YouTube videos into clean local notes from the command line.
 
-当前版本的核心目标很明确：
+`Echoflow` is a small CLI for people who save knowledge from videos but do not want to manually download, transcribe, clean, and rewrite everything by hand. Give it a video link, and it will try to extract subtitles first. If subtitles are not available, it falls back to audio transcription. Then it can either save the raw transcript or rewrite the content into a Markdown article that reads well in `Typora`.
 
-- 把视频内容尽快变成可读、可存档的本地文件
-- 优先复用平台现成字幕，减少转录成本和等待时间
-- 输出结构对 `Typora` 友好，而不是为 Obsidian frontmatter 做优化
-- 尽量保持命令简单，不把一堆模型和提供商配置暴露给用户
+## What It Does
 
-## 功能概览
+- Accepts `Bilibili`, `YouTube`, share text, `BV` / `av` IDs, and YouTube video IDs
+- Normalizes messy links before processing
+- Prefers platform subtitles to reduce cost and waiting time
+- Falls back to ASR automatically when subtitles are unavailable
+- Saves raw transcript as `.txt`
+- Rewrites transcript into a readable Markdown note with metadata and a `NOTE` summary block
+- Lets you set a global output language such as `中文` or `English`
+- Includes a command to update `yt-dlp` when site rules change
 
-- 支持 `Bilibili`、`YouTube` 以及常见分享链接格式
-- 自动清洗链接，兼容 `BV` 号、`av` 号、YouTube 视频 ID
-- 优先下载现成字幕；没有字幕时自动降级为音频转录
-- 使用 `SiliconFlow` 的 `FunAudioLLM/SenseVoiceSmall` 做 ASR
-- 使用 `DeepSeek V4 Pro` 把转录整理成 Markdown 文稿
-- 摘要区域默认输出为 Typora 原生 `NOTE` alert
-- 支持只导出原始转录文本，不做 AI 总结
-- 支持配置输出语言，例如 `中文` 或 `English`
-- 支持单独更新当前环境里的 `yt-dlp`
-
-## 当前工作流
+## Workflow
 
 ### `echoflow run`
 
-完整流程：
+`run` is the full pipeline:
 
-1. 解析并清洗视频链接
-2. 用 `yt-dlp` 探测字幕轨道
-3. 如果有字幕，直接下载并清洗字幕文本
-4. 如果没有可用字幕，下载音频并调用 `SiliconFlow` 做转录
-5. 把文本交给 `DeepSeek` 生成结构化 Markdown
-6. 保存为本地 `.md` 文件
+1. Parse and normalize the input link
+2. Probe subtitle tracks with `yt-dlp`
+3. Use subtitles directly when available
+4. Download audio and transcribe it when subtitles are missing
+5. Rewrite the transcript into a structured Markdown article
+6. Save the final note locally
 
-生成的 Markdown 现在大致长这样：
+### `echoflow transcript`
+
+`transcript` stops earlier:
+
+1. Extract subtitles or transcribe audio
+2. Save the raw text as `.txt`
+
+It does not call the summarization model.
+
+## Output Style
+
+Generated notes are designed for direct reading in `Typora`, not for Obsidian frontmatter workflows.
+
+Example:
 
 ```md
-# 视频标题
+# Video Title
 
 > 作者：...
 > 发布日期：...
@@ -47,52 +54,36 @@
 > 链接：https://...
 
 > [!NOTE]
-> 这里是摘要。
+> Summary goes here.
 
 ## 正文
 
-正文内容……
+整理后的正文内容……
 ```
 
-### `echoflow transcript`
+## Models and Services
 
-这个命令只负责：
+The current design is intentionally opinionated and keeps the provider choices fixed:
 
-1. 提取字幕，或下载音频后转录
-2. 把原始文本保存为 `.txt`
+- Transcription: `SiliconFlow` with `FunAudioLLM/SenseVoiceSmall`
+- Rewriting / summarization: `DeepSeek V4 Pro`
 
-它不会调用 `DeepSeek`，适合你只想拿到转录文本的时候用。
+This keeps the CLI simple, but it also means provider switching is not exposed as a user-facing feature right now.
 
-## 依赖与限制
-
-项目目前是“固定服务提供商”设计，不支持在 CLI 里切换模型或供应商：
-
-- 语音转录：`SiliconFlow`
-- 文稿整理：`DeepSeek`
-
-需要你自行准备：
-
-- `SiliconFlow API Key`
-- `DeepSeek API Key`
-- 可写入的本地输出目录
-
-系统要求：
+## Requirements
 
 - `Python 3.9+`
-- 建议本机可用 `ffmpeg`
+- `ffmpeg` recommended
+- A valid `SiliconFlow API Key`
+- A valid `DeepSeek API Key`
 
-说明：
+`ffmpeg` is especially useful when audio needs to be converted to `mp3`. If a video already has usable subtitles, the pipeline can often skip the heavier audio path.
 
-- 如果视频有字幕，通常不会走音频转录，所以对 `ffmpeg` 的依赖也更弱
-- 如果需要把音频转成 `mp3`，或者平台返回的原始格式不适合直接处理，`ffmpeg` 会更稳
-
-## 安装
-
-建议使用虚拟环境：
+## Installation
 
 ```bash
-git clone https://github.com/your-username/echoflow.git
-cd echoflow
+git clone https://github.com/yihuiz106-wq/EchoFlow.git
+cd EchoFlow
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -100,57 +91,54 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-如果你移动过项目目录，导致虚拟环境里 `echoflow` 的 shebang 失效，可以在项目根目录重新执行一次：
+If you moved the project directory and the virtualenv entrypoint breaks, reinstall the editable package once:
 
 ```bash
 .venv/bin/python -m pip install -e . --no-deps
 ```
 
-## 初始化
+## Quick Start
 
-第一次使用先运行：
+### 1. Initialize once
 
 ```bash
 echoflow init
 ```
 
-它会引导你填写：
-
-- `SiliconFlow API Key`
-- `DeepSeek API Key`
-- 输出目录
-
-配置会保存到：
+This writes your configuration to:
 
 ```bash
 ~/.echoflow_env
 ```
 
-## 常用命令
+You will be asked for:
 
-### 生成 Markdown 文稿
+- `SiliconFlow API Key`
+- `DeepSeek API Key`
+- output directory
+
+### 2. Generate a Markdown note
 
 ```bash
 echoflow run "https://www.bilibili.com/video/BV1xxxxxx"
 ```
 
-### 只导出原始转录文本
+### 3. Export only the transcript
 
 ```bash
 echoflow transcript "https://www.youtube.com/watch?v=xxxxxx"
 ```
 
-### 跳过 mp3 转码，直接使用原始音频
+## Common Commands
+
+### Skip mp3 conversion and use the original audio
 
 ```bash
 echoflow run --raw "https://www.youtube.com/watch?v=xxxxxx"
-```
-
-```bash
 echoflow transcript --raw "https://www.bilibili.com/video/BV1xxxxxx"
 ```
 
-### 修改配置
+### Change config values
 
 ```bash
 echoflow config dir "/Users/me/Documents/Notes"
@@ -158,97 +146,97 @@ echoflow config sf "your-siliconflow-key"
 echoflow config ds "your-deepseek-key"
 ```
 
-其中缩写对应关系是：
+Short names:
 
 - `sf` -> `SILICONFLOW_API_KEY`
 - `ds` -> `DEEPSEEK_API_KEY`
 - `dir` -> `OUTPUT_DIR`
 
-### 设置输出语言
+### Set output language
 
 ```bash
 echoflow language 中文
 echoflow language English
 ```
 
-这会影响最终 AI 整理后的笔记语言，不影响原始字幕或转录文本本身的语言。
+This affects the final rewritten note, not the original transcript language.
 
-### 更新 `yt-dlp`
+### Update `yt-dlp`
 
 ```bash
 echoflow update-yt-dlp
 ```
 
-当平台规则变化、下载突然失败、或字幕提取行为异常时，这个命令通常值得先跑一次。
+Useful when video download or subtitle extraction suddenly starts failing.
 
-### 查看帮助
+### Show help
 
 ```bash
 echoflow --help
 ```
 
-## 链接输入兼容性
+## Input Flexibility
 
-Echoflow 会尽量容忍“随手粘贴”的输入，例如：
+Echoflow tries to be tolerant about what you paste in:
 
-- 完整视频链接
-- Markdown 链接，如 `[标题](https://...)`
-- 带文案的分享文本
-- `BV` 号
-- `av` 号
-- YouTube 11 位视频 ID
+- full video URLs
+- Markdown links like `[title](https://...)`
+- share text that contains a URL
+- `BV` IDs
+- `av` IDs
+- 11-character YouTube video IDs
 
-它还会自动清理一部分追踪参数，例如常见的 `utm_*`。
+It also strips some common tracking parameters such as `utm_*`.
 
-## 输出文件说明
+## Output Files
 
-### Markdown 文稿
+### Markdown notes
 
-- 文件名默认使用视频标题
-- 自动处理重名冲突
-- 顶部附带作者、发布日期、平台、时长、生成时间和原始链接
-- 摘要区使用 Typora 原生 `NOTE` alert
+- saved using the video title as filename
+- auto-renamed on conflicts
+- include author, publish date, platform, duration, generated time, and source link
+- include a Typora-native `NOTE` summary block
 
-### 转录文本
+### Raw transcripts
 
-- 文件名默认是 `视频标题_transcript.txt`
-- 不做摘要，不做二次整理
+- saved as `video_title_transcript.txt`
+- contain the extracted or transcribed text only
 
-## 常见问题
+## FAQ
 
-### 为什么有时候很快，有时候很慢？
+### Why is it fast sometimes and slow other times?
 
-因为它会先尝试拿字幕。
+Because subtitle-first and audio-transcription are very different paths:
 
-- 有字幕：通常很快
-- 没字幕：需要下载音频并走 ASR，再交给 LLM 整理，整体耗时会明显增加
+- subtitles available: usually much faster
+- subtitles unavailable: audio must be downloaded, transcribed, then rewritten
 
-### 为什么 `transcript` 不需要 DeepSeek Key？
+### Why does `transcript` not need DeepSeek?
 
-因为 `transcript` 只负责拿到原始文本并保存，不做总结。
+Because it only saves raw text and skips the rewrite step.
 
-### 为什么 `run` 有时仍然要求配置 SiliconFlow Key？
+### Why might `run` still need SiliconFlow even if I mostly use subtitles?
 
-如果视频本身没有可用字幕，`run` 会回退到音频转录，这时就需要 `SiliconFlow API Key`。
+Because some videos do not expose usable subtitles, so the command must fall back to ASR.
 
-### 输出目录可以后面再改吗？
+### Can I change the output directory later?
 
-可以：
+Yes:
 
 ```bash
 echoflow config dir "/new/output/path"
 ```
 
-## 开发说明
+## Development
 
-当前入口命令来自 `pyproject.toml` 中的脚本配置：
+The CLI entrypoint is defined in `pyproject.toml`:
 
 ```toml
 [project.scripts]
 echoflow = "echoflow.main:app"
 ```
 
-本地开发常用方式：
+Typical local development flow:
 
 ```bash
 source .venv/bin/activate
@@ -256,7 +244,7 @@ pip install -e .
 echoflow --help
 ```
 
-如果你只是想直接调试模块，也可以：
+Or run the module directly:
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m echoflow.main --help
