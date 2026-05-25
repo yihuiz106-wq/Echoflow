@@ -1,50 +1,52 @@
 # Echoflow
 
-Turn Bilibili or YouTube videos into clean local notes from the command line.
+把 Bilibili 或 YouTube 视频，快速整理成适合本地保存和阅读的 Markdown 笔记。
 
-`Echoflow` is a small CLI for people who save knowledge from videos but do not want to manually download, transcribe, clean, and rewrite everything by hand. Give it a video link, and it will try to extract subtitles first. If subtitles are not available, it falls back to audio transcription. Then it can either save the raw transcript or rewrite the content into a Markdown article that reads well in `Typora`.
+`Echoflow` 是一个面向 `Typora` 工作流的命令行工具。你只需要给它一个视频链接，它会优先尝试提取现成字幕；如果拿不到字幕，就自动下载音频并做语音转录。之后你可以选择直接导出原始文本，或者进一步整理成一篇结构清晰、适合阅读的 Markdown 文稿。
 
-## What It Does
+## 项目特点
 
-- Accepts `Bilibili`, `YouTube`, share text, `BV` / `av` IDs, and YouTube video IDs
-- Normalizes messy links before processing
-- Prefers platform subtitles to reduce cost and waiting time
-- Falls back to ASR automatically when subtitles are unavailable
-- Saves raw transcript as `.txt`
-- Rewrites transcript into a readable Markdown note with metadata and a `NOTE` summary block
-- Lets you set a global output language such as `中文` or `English`
-- Includes a command to update `yt-dlp` when site rules change
+- 支持 `Bilibili`、`YouTube` 以及常见分享链接格式
+- 支持直接输入 `BV` 号、`av` 号、YouTube 视频 ID
+- 自动清洗链接，去掉常见追踪参数
+- 优先使用平台字幕，降低耗时和转录成本
+- 没有字幕时自动回退到 ASR 转录
+- 支持导出原始转录文本 `.txt`
+- 支持整理成适合 `Typora` 阅读的 Markdown 笔记
+- 摘要区域使用 Typora 原生 `NOTE` alert
+- 支持设置统一输出语言，例如 `中文` 或 `English`
+- 提供 `yt-dlp` 更新命令，方便处理平台规则变动
 
-## Workflow
+## 工作流
 
 ### `echoflow run`
 
-`run` is the full pipeline:
+这是完整流程：
 
-1. Parse and normalize the input link
-2. Probe subtitle tracks with `yt-dlp`
-3. Use subtitles directly when available
-4. Download audio and transcribe it when subtitles are missing
-5. Rewrite the transcript into a structured Markdown article
-6. Save the final note locally
+1. 解析并规范化输入链接
+2. 用 `yt-dlp` 探测字幕轨道
+3. 如果有可用字幕，直接提取并清洗字幕文本
+4. 如果没有字幕，下载音频并调用 ASR 转录
+5. 用大模型把转录整理成结构化 Markdown
+6. 保存到本地目录
 
 ### `echoflow transcript`
 
-`transcript` stops earlier:
+这个命令只做前半段：
 
-1. Extract subtitles or transcribe audio
-2. Save the raw text as `.txt`
+1. 提取字幕，或者转录音频
+2. 保存原始文本为 `.txt`
 
-It does not call the summarization model.
+它不会调用总结模型，适合只想拿到原始文本的时候使用。
 
-## Output Style
+## 输出效果
 
-Generated notes are designed for direct reading in `Typora`, not for Obsidian frontmatter workflows.
+当前输出是为 `Typora` 直接阅读优化的，不是为 Obsidian frontmatter 工作流设计的。
 
-Example:
+生成的 Markdown 大致会长这样：
 
 ```md
-# Video Title
+# 视频标题
 
 > 作者：...
 > 发布日期：...
@@ -54,36 +56,39 @@ Example:
 > 链接：https://...
 
 > [!NOTE]
-> Summary goes here.
+> 这里是摘要。
 
 ## 正文
 
 整理后的正文内容……
 ```
 
-## Models and Services
+## 使用的服务
 
-The current design is intentionally opinionated and keeps the provider choices fixed:
+当前版本采用固定服务提供商设计，尽量保持 CLI 简单，不开放模型切换配置：
 
-- Transcription: `SiliconFlow` with `FunAudioLLM/SenseVoiceSmall`
-- Rewriting / summarization: `DeepSeek V4 Pro`
+- 转录：`SiliconFlow` 的 `FunAudioLLM/SenseVoiceSmall`
+- 整理与总结：`DeepSeek V4 Pro`
 
-This keeps the CLI simple, but it also means provider switching is not exposed as a user-facing feature right now.
+这意味着它开箱即用，但如果你想切换到别的 ASR 或 LLM，目前还不是这个项目的目标。
 
-## Requirements
+## 运行要求
 
 - `Python 3.9+`
-- `ffmpeg` recommended
-- A valid `SiliconFlow API Key`
-- A valid `DeepSeek API Key`
+- 建议安装 `ffmpeg`
+- 可用的 `SiliconFlow API Key`
+- 可用的 `DeepSeek API Key`
 
-`ffmpeg` is especially useful when audio needs to be converted to `mp3`. If a video already has usable subtitles, the pipeline can often skip the heavier audio path.
+说明：
 
-## Installation
+- 如果视频自带可用字幕，通常不会走音频转录路径
+- 如果需要把音频转成 `mp3`，或者源格式不适合直接处理，`ffmpeg` 会更稳
+
+## 安装
 
 ```bash
-git clone https://github.com/yihuiz106-wq/EchoFlow.git
-cd EchoFlow
+git clone https://github.com/yihuiz106-wq/Echoflow.git
+cd Echoflow
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -91,54 +96,54 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-If you moved the project directory and the virtualenv entrypoint breaks, reinstall the editable package once:
+如果你移动过项目目录，导致虚拟环境里的 `echoflow` 入口失效，可以重新安装一次：
 
 ```bash
 .venv/bin/python -m pip install -e . --no-deps
 ```
 
-## Quick Start
+## 快速开始
 
-### 1. Initialize once
+### 1. 先初始化一次
 
 ```bash
 echoflow init
 ```
 
-This writes your configuration to:
+配置会写入：
 
 ```bash
 ~/.echoflow_env
 ```
 
-You will be asked for:
+初始化时会让你填写：
 
 - `SiliconFlow API Key`
 - `DeepSeek API Key`
-- output directory
+- 输出目录
 
-### 2. Generate a Markdown note
+### 2. 生成 Markdown 笔记
 
 ```bash
 echoflow run "https://www.bilibili.com/video/BV1xxxxxx"
 ```
 
-### 3. Export only the transcript
+### 3. 只导出转录文本
 
 ```bash
 echoflow transcript "https://www.youtube.com/watch?v=xxxxxx"
 ```
 
-## Common Commands
+## 常用命令
 
-### Skip mp3 conversion and use the original audio
+### 跳过 mp3 转码，直接使用原始音频
 
 ```bash
 echoflow run --raw "https://www.youtube.com/watch?v=xxxxxx"
 echoflow transcript --raw "https://www.bilibili.com/video/BV1xxxxxx"
 ```
 
-### Change config values
+### 修改配置
 
 ```bash
 echoflow config dir "/Users/me/Documents/Notes"
@@ -146,97 +151,98 @@ echoflow config sf "your-siliconflow-key"
 echoflow config ds "your-deepseek-key"
 ```
 
-Short names:
+缩写对应关系：
 
 - `sf` -> `SILICONFLOW_API_KEY`
 - `ds` -> `DEEPSEEK_API_KEY`
 - `dir` -> `OUTPUT_DIR`
 
-### Set output language
+### 设置输出语言
 
 ```bash
 echoflow language 中文
 echoflow language English
 ```
 
-This affects the final rewritten note, not the original transcript language.
+这会影响最终整理后的笔记语言，不影响原始字幕或转录文本本身的语言。
 
-### Update `yt-dlp`
+### 更新 `yt-dlp`
 
 ```bash
 echoflow update-yt-dlp
 ```
 
-Useful when video download or subtitle extraction suddenly starts failing.
+当视频下载、字幕提取突然异常时，通常值得先跑一次这个命令。
 
-### Show help
+### 查看帮助
 
 ```bash
 echoflow --help
 ```
 
-## Input Flexibility
+## 输入兼容性
 
-Echoflow tries to be tolerant about what you paste in:
+Echoflow 会尽量容忍“随手粘贴”的输入，比如：
 
-- full video URLs
-- Markdown links like `[title](https://...)`
-- share text that contains a URL
-- `BV` IDs
-- `av` IDs
-- 11-character YouTube video IDs
+- 完整视频链接
+- Markdown 链接，如 `[标题](https://...)`
+- 带文案的分享文本
+- `BV` 号
+- `av` 号
+- 11 位 YouTube 视频 ID
 
-It also strips some common tracking parameters such as `utm_*`.
+它还会自动清理一部分常见追踪参数，例如 `utm_*`。
 
-## Output Files
+## 输出文件
 
-### Markdown notes
+### Markdown 笔记
 
-- saved using the video title as filename
-- auto-renamed on conflicts
-- include author, publish date, platform, duration, generated time, and source link
-- include a Typora-native `NOTE` summary block
+- 默认使用视频标题作为文件名
+- 自动处理重名冲突
+- 包含作者、发布日期、平台、时长、生成时间和原始链接
+- 摘要区使用 Typora 原生 `NOTE` alert
 
-### Raw transcripts
+### 原始转录文本
 
-- saved as `video_title_transcript.txt`
-- contain the extracted or transcribed text only
+- 默认保存为 `视频标题_transcript.txt`
+- 只包含提取或转录后的文本
+- 不做摘要，不做二次整理
 
-## FAQ
+## 常见问题
 
-### Why is it fast sometimes and slow other times?
+### 为什么有时候很快，有时候很慢？
 
-Because subtitle-first and audio-transcription are very different paths:
+因为它会优先尝试拿字幕，而“有字幕”和“没字幕”是两条完全不同的路径：
 
-- subtitles available: usually much faster
-- subtitles unavailable: audio must be downloaded, transcribed, then rewritten
+- 有字幕：通常很快
+- 没字幕：需要下载音频、转录，再交给大模型整理
 
-### Why does `transcript` not need DeepSeek?
+### 为什么 `transcript` 不需要 DeepSeek？
 
-Because it only saves raw text and skips the rewrite step.
+因为它只负责保存原始文本，不做总结或改写。
 
-### Why might `run` still need SiliconFlow even if I mostly use subtitles?
+### 为什么 `run` 有时还是需要 SiliconFlow？
 
-Because some videos do not expose usable subtitles, so the command must fall back to ASR.
+因为有些视频没有可用字幕，这时就只能回退到 ASR 转录。
 
-### Can I change the output directory later?
+### 输出目录之后还能改吗？
 
-Yes:
+可以：
 
 ```bash
 echoflow config dir "/new/output/path"
 ```
 
-## Development
+## 开发说明
 
-The CLI entrypoint is defined in `pyproject.toml`:
+CLI 入口定义在 `pyproject.toml`：
 
 ```toml
 [project.scripts]
 echoflow = "echoflow.main:app"
 ```
 
-Typical local development flow:
+本地开发常用方式：
 
 ```bash
 source .venv/bin/activate
@@ -244,7 +250,7 @@ pip install -e .
 echoflow --help
 ```
 
-Or run the module directly:
+也可以直接运行模块：
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m echoflow.main --help
