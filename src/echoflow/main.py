@@ -21,7 +21,7 @@ from echoflow.config import set_language
 # 导入核心模块 (注意：writer 必须更新以接收 output_dir)
 from echoflow.downloader import download_audio
 from echoflow.transcriber import transcribe_audio
-from echoflow.summarizer import generate_summary
+from echoflow.summarizer import generate_summary, simplify_title
 from echoflow.writer import save_markdown, save_transcript
 
 # 初始化 Typer 应用和 Rich Console
@@ -56,6 +56,26 @@ def print_video_title(metadata: dict) -> None:
         console.print(f"[dim]标题：{title}[/dim]")
 
 
+def maybe_simplify_metadata_title(metadata: dict) -> dict:
+    if not metadata:
+        return metadata
+
+    original_title = (metadata.get("title") or "").strip()
+    if not original_title:
+        return metadata
+
+    simplified_title = simplify_title(original_title)
+    if not simplified_title or simplified_title == original_title:
+        return metadata
+
+    updated = dict(metadata)
+    updated["original_title"] = original_title
+    updated["title"] = simplified_title
+
+    console.print(f"[dim]精简标题：{simplified_title}[/dim]")
+    return updated
+
+
 def get_package_version(package_name: str) -> str:
     try:
         return version(package_name)
@@ -65,6 +85,13 @@ def get_package_version(package_name: str) -> str:
 
 def clean_terminal_text(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*m", "", text or "").strip()
+
+
+def is_bilibili_412_error(text: str) -> bool:
+    normalized = (text or "").lower()
+    return "[bilibili]" in normalized and (
+        "412" in normalized or "precondition failed" in normalized
+    )
 
 
 def ensure_config(required_keys: tuple[str, ...], hint_command: str) -> None:
@@ -102,6 +129,7 @@ def fetch_transcript(url: str, *, convert_audio: bool = True) -> tuple[dict, str
         )
 
         print_video_title(metadata)
+        metadata = maybe_simplify_metadata_title(metadata)
 
         if subtitle_text:
             print_success("已提取视频字幕")
@@ -142,7 +170,11 @@ def config_update(
         "sf": "SILICONFLOW_API_KEY",
         "ds": "DEEPSEEK_API_KEY",
         "dir": "OUTPUT_DIR",
-        "output_dir": "OUTPUT_DIR"
+        "output_dir": "OUTPUT_DIR",
+        "cookie": "BILIBILI_COOKIES_FROM_BROWSER",
+        "cookies": "BILIBILI_COOKIES_FROM_BROWSER",
+        "bili_cookie": "BILIBILI_COOKIES_FROM_BROWSER",
+        "bili_cookies": "BILIBILI_COOKIES_FROM_BROWSER",
     }
     
     # 转换 key 为标准的大写格式
@@ -261,8 +293,15 @@ def main(
         console.print(f"[link=file://{Path(final_path).absolute()}]{final_path}[/link]")
 
     except Exception as e:
-        print_error(f"运行失败: {clean_terminal_text(str(e))}")
-        console.print("[dim]提示: 请检查网络连接、视频链接是否有效，或 API 余额是否充足。[/dim]")
+        error_text = clean_terminal_text(str(e))
+        print_error(f"运行失败: {error_text}")
+        if is_bilibili_412_error(error_text):
+            console.print(
+                "[dim]提示: 当前更像是 B 站风控或登录态问题。可先关闭浏览器后重试，"
+                "或运行 `echoflow config cookie chrome` 指定从 Chrome 读取 Cookie。[/dim]"
+            )
+        else:
+            console.print("[dim]提示: 请检查网络连接、视频链接是否有效，或 API 余额是否充足。[/dim]")
         raise typer.Exit(code=1)
 
 
@@ -293,8 +332,15 @@ def transcript_only(
         console.print(f"[link=file://{Path(final_path).absolute()}]{final_path}[/link]")
 
     except Exception as e:
-        print_error(f"运行失败: {clean_terminal_text(str(e))}")
-        console.print("[dim]提示: 请检查网络连接、视频链接是否有效，或 API 余额是否充足。[/dim]")
+        error_text = clean_terminal_text(str(e))
+        print_error(f"运行失败: {error_text}")
+        if is_bilibili_412_error(error_text):
+            console.print(
+                "[dim]提示: 当前更像是 B 站风控或登录态问题。可先关闭浏览器后重试，"
+                "或运行 `echoflow config cookie chrome` 指定从 Chrome 读取 Cookie。[/dim]"
+            )
+        else:
+            console.print("[dim]提示: 请检查网络连接、视频链接是否有效，或 API 余额是否充足。[/dim]")
         raise typer.Exit(code=1)
 
 if __name__ == "__main__":

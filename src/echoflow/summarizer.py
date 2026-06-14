@@ -126,6 +126,82 @@ def generate_summary(text: str) -> tuple[str, str]:
         raise Exception(f"DeepSeek V4 Pro API 调用失败: {error_message}")
 
 
+def simplify_title(title: str, max_display_length: int = 44) -> str:
+    """
+    使用 DeepSeek 将过长的视频标题精简成更适合文件名和文档标题的版本。
+    如果标题本身已经足够短，或未配置 API Key，则直接返回原标题。
+    """
+    original = (title or "").strip()
+    if not original:
+        return original
+
+    if not title_needs_simplification(original, max_display_length=max_display_length):
+        return original
+
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        return original
+
+    try:
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://api.deepseek.com"
+        )
+
+        response = client.chat.completions.create(
+            model="deepseek-v4-pro",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
+你是一位擅长压缩标题的信息编辑。
+
+你的任务是把一个过长的视频标题压缩成更简洁、更适合文件名和文章标题的版本。
+
+要求：
+1. 必须保留原题最核心的主题信息，不要改写原意。
+2. 删除冗余的口语化表达、夸张措辞、重复信息、过长的修饰语。
+3. 如果原题里有人名、系列名、集数、前后缀宣传语，只保留对理解主题真正必要的部分。
+4. 输出结果尽量自然，像一篇笔记的标题，而不是营销标题。
+5. 不要加书名号、引号、emoji、括号补充说明。
+6. 输出长度尽量控制在 12 到 28 个中文字符，或语义等价的简洁长度。
+7. 只输出最终标题本身，不要解释，不要加序号，不要加引号。
+""".strip(),
+                },
+                {"role": "user", "content": original},
+            ],
+            temperature=0.2,
+            max_tokens=80,
+        )
+
+        simplified = strip_think_tags(response.choices[0].message.content or "").strip()
+        simplified = simplified.strip().strip('"\'')
+        simplified = re.sub(r"\s+", " ", simplified)
+        simplified = re.sub(r"^[#*\-\d.\s]+", "", simplified).strip()
+
+        if not simplified:
+            return original
+
+        if display_length(simplified) > max_display_length:
+            return original
+
+        return simplified
+
+    except Exception:
+        return original
+
+
+def title_needs_simplification(title: str, max_display_length: int = 44) -> bool:
+    return display_length(title) > max_display_length
+
+
+def display_length(text: str) -> int:
+    length = 0
+    for ch in text:
+        length += 1 if ch.isascii() else 2
+    return length
+
+
 def strip_think_tags(content: str) -> str:
     """
     移除 <think>...</think> 区块，避免返回内容混入推理过程。

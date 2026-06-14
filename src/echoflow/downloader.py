@@ -31,6 +31,49 @@ from rich.progress import (
 )
 
 
+class QuietYtDlpLogger:
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        pass
+
+    def error(self, msg):
+        pass
+
+
+def is_bilibili_url(url: str) -> bool:
+    return "bilibili.com" in (url or "")
+
+
+def should_retry_with_browser_cookies(error_message: str, url: str) -> bool:
+    normalized = (error_message or "").lower()
+    return is_bilibili_url(url) and (
+        "412" in normalized or "precondition failed" in normalized
+    )
+
+
+def get_browser_cookie_candidates() -> list[str]:
+    configured = (
+        os.getenv("BILIBILI_COOKIES_FROM_BROWSER")
+        or os.getenv("ECHOFLOW_COOKIES_FROM_BROWSER")
+        or ""
+    ).strip()
+    if configured:
+        raw_candidates = [item.strip().lower() for item in configured.split(",")]
+    else:
+        raw_candidates = ["chrome", "safari", "edge", "firefox"]
+
+    candidates: list[str] = []
+    for candidate in raw_candidates:
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
 def clean_subtitle(file_path: str) -> str:
     """
     清洗 VTT/SRT 字幕文件，提取纯文本。
@@ -156,16 +199,16 @@ def download_audio(
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     console = Console()
+    used_cookie_retry = False
 
     # 1) 分离配置：基础配置 + 字幕探测配置 + 音频下载配置
-    #    注意：quiet + noprogress + logger=None 用于彻底屏蔽 yt-dlp 原生输出，避免与 Rich 冲突“闪烁”
     common_opts: dict = {
         "outtmpl": str(temp_dir / "%(id)s.%(ext)s"),
         "quiet": True,
         "noprogress": True,
         "no_warnings": True,
         "no_color": True,
-        "logger": None,
+        "logger": QuietYtDlpLogger(),
     }
 
     subtitle_probe_opts: dict = {
@@ -260,17 +303,42 @@ def download_audio(
             if status == "started" and postprocessor == "ExtractAudio":
                 progress.update(task_id, description="正在转换音频为 mp3...")
 
+        def execute_download(ydl_opts: dict) -> tuple[dict, str]:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                with redirect_stderr(io.StringIO()):
+                    info = ydl.extract_info(normalized_url, download=should_download)
+                filename = ydl.prepare_filename(info)
+            return info, filename
+
         ydl_opts = dict(opts)
         if show_progress:
             ydl_opts["progress_hooks"] = [yt_dlp_monitor]
         if convert_audio:
             ydl_opts["postprocessor_hooks"] = [postprocessor_monitor]
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            with redirect_stderr(io.StringIO()):
-                info = ydl.extract_info(normalized_url, download=should_download)
-            filename = ydl.prepare_filename(info)
-        return info, filename
+        try:
+            return execute_download(ydl_opts)
+        except Exception as first_error:
+            nonlocal used_cookie_retry
+            if not should_retry_with_browser_cookies(str(first_error), normalized_url):
+                raise
+            if ydl_opts.get("cookiesfrombrowser"):
+                raise
+
+            last_error = first_error
+            for browser in get_browser_cookie_candidates():
+                retry_opts = dict(ydl_opts)
+                retry_opts["cookiesfrombrowser"] = (browser, None, None, None)
+                try:
+                    result = execute_download(retry_opts)
+                    if not used_cookie_retry:
+                        console.print(f"[yellow]已使用 {browser} 浏览器 Cookie 通过 B 站校验[/yellow]")
+                        used_cookie_retry = True
+                    return result
+                except Exception as cookie_error:
+                    last_error = cookie_error
+
+            raise last_error
 
     def has_subtitle_tracks(info: dict) -> bool:
         subtitles = info.get("subtitles") or {}

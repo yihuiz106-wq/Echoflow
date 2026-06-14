@@ -43,7 +43,7 @@ def save_markdown(metadata: dict, description: str, content: str, output_dir: st
         
         # 生成安全的文件名
         title = metadata.get('title', 'Untitled')
-        filename = sanitize_filename(title) + '.md'
+        filename = sanitize_filename(f"AE {title}") + '.md'
         filepath = output_path / filename
         
         # 处理文件名冲突
@@ -126,6 +126,7 @@ def handle_filename_conflict(filepath: Path) -> Path:
 def build_metadata_block(metadata: dict, description: str) -> str:
     """构建适合 Typora 阅读的元信息区块"""
     author = metadata.get("author", "Unknown")
+    original_title = metadata.get("original_title", "")
     url = metadata.get("url", "")
     published = metadata.get("published", datetime.now().strftime("%Y-%m-%d"))
     platform = metadata.get("source_domain", "unknown")
@@ -139,6 +140,9 @@ def build_metadata_block(metadata: dict, description: str) -> str:
         f"> 时长：{duration}",
         f"> 生成时间：{created}",
     ]
+
+    if original_title and original_title != metadata.get("title", ""):
+        lines.insert(0, f"> 原标题：{original_title}")
 
     if url:
         lines.append(f"> 链接：{url}")
