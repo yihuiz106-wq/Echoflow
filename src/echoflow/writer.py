@@ -14,7 +14,7 @@ from echoflow.config import CONFIG_PATH
 load_dotenv(CONFIG_PATH, override=True)
 
 
-def save_markdown(metadata: dict, description: str, content: str, output_dir: str = None) -> str:
+def save_markdown(metadata: dict, description: str, content: str, output_dir: str | None = None) -> str:
     """
     保存 Markdown 文件到指定目录，输出更适合 Typora 阅读的文章结构
     
@@ -49,8 +49,8 @@ def save_markdown(metadata: dict, description: str, content: str, output_dir: st
         # 处理文件名冲突
         filepath = handle_filename_conflict(filepath)
         
-        metadata_block = build_metadata_block(metadata, description)
-        normalized_content = convert_abstract_section_to_callout(content.strip())
+        metadata_block = build_metadata_block(metadata)
+        normalized_content = normalize_markdown_content(content, description)
         full_content = f"# {title}\n\n{metadata_block}\n\n{normalized_content}"
         
         # 写入文件
@@ -67,7 +67,7 @@ def save_markdown(metadata: dict, description: str, content: str, output_dir: st
         raise Exception(f"保存 Markdown 文件失败: {e}")
 
 
-def save_transcript(metadata: dict, transcript: str, output_dir: str = None) -> str:
+def save_transcript(metadata: dict, transcript: str, output_dir: str | None = None) -> str:
     """
     保存原始转录文本到指定目录，不做 AI 总结或二次加工。
     """
@@ -123,7 +123,7 @@ def handle_filename_conflict(filepath: Path) -> Path:
         counter += 1
 
 
-def build_metadata_block(metadata: dict, description: str) -> str:
+def build_metadata_block(metadata: dict) -> str:
     """构建适合 Typora 阅读的元信息区块"""
     author = metadata.get("author", "Unknown")
     original_title = metadata.get("original_title", "")
@@ -150,6 +150,66 @@ def build_metadata_block(metadata: dict, description: str) -> str:
     return "\n".join(lines)
 
 
+def ensure_note_callout(content: str, description: str) -> str:
+    """
+    如果模型没有输出 Typora callout，就用 description 补一个摘要块。
+    """
+    if not description or has_typora_callout(content):
+        return content
+
+    callout_lines = ["> [!NOTE]"]
+    for line in description.strip().splitlines():
+        callout_lines.append(f"> {line.rstrip()}" if line.strip() else ">")
+
+    callout = "\n".join(callout_lines)
+    if not content:
+        return callout
+    return f"{callout}\n\n{content}"
+
+
+def has_typora_callout(content: str) -> bool:
+    return bool(
+        re.search(
+            r"^\s*>\s*\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]",
+            content or "",
+            re.IGNORECASE | re.MULTILINE,
+        )
+    )
+
+
+def normalize_markdown_content(content: str, description: str) -> str:
+    """
+    程序侧的 Markdown harness：兜底摘要块，并规整标题和空行。
+    """
+    normalized = normalize_newlines(content.strip())
+    normalized = convert_abstract_section_to_callout(normalized)
+    normalized = ensure_note_callout(normalized, description)
+    return normalize_markdown_spacing(normalized)
+
+
+def normalize_newlines(content: str) -> str:
+    return (content or "").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def normalize_markdown_spacing(content: str) -> str:
+    if not content:
+        return content
+
+    lines = [line.rstrip() for line in normalize_newlines(content).split("\n")]
+    result: list[str] = []
+    heading_re = re.compile(r"^#{2,6}\s+")
+
+    for line in lines:
+        if heading_re.match(line) and result and result[-1] != "":
+            result.append("")
+        result.append(line)
+
+    text = "\n".join(result).strip()
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"^(#{2,6}\s+.+)\n(?!\n)", r"\1\n\n", text, flags=re.MULTILINE)
+    return text.strip()
+
+
 def format_duration(duration: int | None) -> str:
     """把秒数格式化为更易读的时长文本"""
     if not duration or duration < 0:
@@ -171,7 +231,7 @@ def convert_abstract_section_to_callout(content: str) -> str:
     if not content:
         return content
 
-    if re.search(r"^\s*>\s*\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]", content, re.IGNORECASE | re.MULTILINE):
+    if has_typora_callout(content):
         return content
 
     # 捕获从“## 摘要/Abstract”到下一个二级标题前的内容

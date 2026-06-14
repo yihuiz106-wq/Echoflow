@@ -264,8 +264,10 @@ def download_audio(
             cleaned = clean_subtitle(chosen)
             if cleaned:
                 subtitle_text = cleaned
+
+        for subtitle_file in subtitle_files:
             try:
-                os.remove(chosen)
+                os.remove(subtitle_file)
             except Exception:
                 pass
 
@@ -420,10 +422,11 @@ if __name__ == "__main__":
     test_url = "https://www.bilibili.com/video/BV1uT4y1P7CX"
 
     try:
-        path, subtitle, meta = download_audio(test_url)
+        path, subtitle, meta, source = download_audio(test_url)
         print("\n测试成功！")
         print(f"临时文件路径: {path}")
         print(f"字幕提取: {'有' if subtitle else '无'}")
+        print(f"转录来源: {source}")
         print(f"元数据: {meta['title']}")
 
         import time

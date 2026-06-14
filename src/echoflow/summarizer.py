@@ -14,6 +14,9 @@ from echoflow.config import CONFIG_PATH
 # 优先加载用户配置，避免项目根目录里的旧 .env 抢占配置
 load_dotenv(CONFIG_PATH, override=True)
 
+SUMMARY_TEMPERATURE = 0.45
+SUMMARY_MAX_TOKENS = 4000
+
 
 def generate_summary(text: str) -> tuple[str, str]:
     """
@@ -53,55 +56,12 @@ def generate_summary(text: str) -> tuple[str, str]:
             base_url="https://api.deepseek.com"
         )
         
-        system_prompt = f"""
-你是一位“知识问答类内容编辑”。你的任务是把视频转录文本改写成一篇结构清晰、可读性高的 Markdown 文稿。
-
-无论输入文本是什么语言，你都必须强制使用 {target_lang} 输出。
-
-请返回一个 JSON 对象，且只包含两个字段：
-{{
-  "description": "...",
-  "content": "..."
-}}
-
-写作目标与风格：
-1. 整体风格要清楚、自然、有信息密度，接近高质量知识博主的讲解文风。
-2. 语气可以比学术写作更生动，但不能过度口语化，不要网络梗，不要夸张表达。
-3. 严禁添加原文没有明确支持的新事实、比喻、类比、故事或案例。
-4. 如果原文证据不足，宁可保守表达，也不要“脑补”。
-
-内容保真要求：
-1. 忠实保留原视频核心观点、推理链路和关键细节，不改变原意。
-2. 删除口头禅、重复、寒暄和无效停顿，但保留对理解有价值的信息。
-3. 对逻辑跳跃处进行整理与衔接，让读者不看视频也能理解。
-
-结构与可读性要求：
-1. `description` 写 60-120 字，概括主题、核心问题和结论。
-2. `content` 必须先输出一个 Markdown callout 摘要块：
-   第一行固定为 `> [!NOTE]`
-   后续摘要正文的每一行都放在 callout 内，并以 `> ` 开头
-   摘要块结束后，再进入正文
-3. 不要再输出 `## 摘要` 或 `## Abstract` 这样的单独大标题。
-4. 正文使用标准 Markdown 标题（`##` / `###`）组织。
-5. 每段尽量短：建议 1-3 句，优先 2 句；避免大段连续文本。
-6. 句子尽量短，减少长串并列和过多从句。
-7. 段落之间必须空行，确保 Typora 阅读舒适。
-
-输出协议要求：
-1. 不要输出代码块包裹 JSON。
-2. 不要输出 JSON 之外的任何解释性文字。
-3. 不要输出 `<think>` 标签或推理过程。
-""".strip()
-
         # 调用 DeepSeek V4 Pro API
         response = client.chat.completions.create(
             model="deepseek-v4-pro",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text}
-            ],
-            temperature=0.45,  # 更稳健，减少过度发挥
-            max_tokens=4000   # 确保有足够空间输出完整内容
+            messages=build_summary_messages(target_lang, text),
+            temperature=SUMMARY_TEMPERATURE,
+            max_tokens=SUMMARY_MAX_TOKENS,
         )
         
         # 获取 AI 返回内容
@@ -110,20 +70,57 @@ def generate_summary(text: str) -> tuple[str, str]:
         if not raw_content or raw_content.strip() == "":
             raise Exception("AI 返回内容为空")
         
-        # 移除 <think>...</think>（防止污染输出协议）
-        processed_content = strip_think_tags(raw_content).strip()
-
-        # 优先按 JSON 协议解析
-        description, content = parse_json_description_content(processed_content)
-        if not description or not content:
-            # 兼容旧协议（DESCRIPTION: + Markdown）
-            description, content = split_description_and_content(processed_content)
-        
-        return description, content
+        return parse_summary_response(raw_content)
     
     except Exception as e:
         error_message = str(e)
         raise Exception(f"DeepSeek V4 Pro API 调用失败: {error_message}")
+
+
+def build_summary_system_prompt(target_lang: str) -> str:
+    return f"""
+你是 Echoflow 的知识文稿编辑引擎。
+目标：把可能含 ASR 错误的视频转录整理成 {target_lang} Markdown 文稿。
+原则：忠实原意，不添加转录未支持的新事实。
+纠错：根据上下文修正明显的语音识别错误、同音/近音词、断句和术语误识别。
+边界：不可靠的纠错只做保守概括，不要把猜测写成确定事实。
+风格：自然、清楚、有信息密度，删除口头填充和无效重复。
+输出：仅返回 JSON 对象，包含 description 和 content 两个字段。
+""".strip()
+
+
+def build_summary_user_message(transcript: str) -> str:
+    return f"""
+请处理下面的转录文本。
+
+输出约束：
+- description: 60-120 字，概括主题、核心问题和结论。
+- content: Markdown 正文，可使用 `##` / `###` 标题；不要输出顶层 `#` 标题。
+- 只返回 JSON，不要代码块、解释文字或推理过程。
+
+<transcript>
+{transcript.strip()}
+</transcript>
+""".strip()
+
+
+def build_summary_messages(target_lang: str, transcript: str) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": build_summary_system_prompt(target_lang)},
+        {"role": "user", "content": build_summary_user_message(transcript)},
+    ]
+
+
+def parse_summary_response(raw_content: str) -> tuple[str, str]:
+    processed_content = strip_think_tags(raw_content).strip()
+
+    # 优先按 JSON 协议解析
+    description, content = parse_json_description_content(processed_content)
+    if description and content:
+        return description, content
+
+    # 兼容旧协议（DESCRIPTION: + Markdown）
+    return split_description_and_content(processed_content)
 
 
 def simplify_title(title: str, max_display_length: int = 44) -> str:

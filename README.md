@@ -74,7 +74,7 @@
 
 ## 运行要求
 
-- `Python 3.9+`
+- `Python 3.10+`
 - 建议安装 `ffmpeg`
 - 可用的 `SiliconFlow API Key`
 - 可用的 `DeepSeek API Key`

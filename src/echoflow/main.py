@@ -108,6 +108,16 @@ def ensure_config(required_keys: tuple[str, ...], hint_command: str) -> None:
     raise typer.Exit(code=1)
 
 
+def mask_config_value(env_key: str, value: str) -> str:
+    if "API_KEY" not in env_key:
+        return value
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}...{value[-4:]}"
+
+
 def format_file_size(path: str) -> str:
     size = Path(path).stat().st_size
     if size >= 1024 * 1024:
@@ -136,6 +146,11 @@ def fetch_transcript(url: str, *, convert_audio: bool = True) -> tuple[dict, str
             return metadata, subtitle_text
 
         if transcript_source == "audio":
+            if not config.load_config(required_keys=("SILICONFLOW_API_KEY",)):
+                raise ValueError(
+                    "当前视频没有可用字幕，需要调用音频转录，"
+                    "但尚未配置 SILICONFLOW_API_KEY。请运行 `echoflow config sf <key>` 后重试。"
+                )
             print_success("已下载音频")
         print_step(f"上传音频到 SiliconFlow: {Path(audio_path).name} · {format_file_size(audio_path)}")
         transcript = transcribe_audio(audio_path)
@@ -192,16 +207,19 @@ def config_update(
                 console.print(f"[dim]已自动创建目录: {final_value}[/dim]")
             except Exception as e:
                 console.print(f"[bold red]无法创建目录: {e}[/bold red]")
+                raise typer.Exit(code=1)
 
     # 3. 写入配置文件，强制不加引号
     try:
+        config.ensure_config_file()
         # 确保路径转换为字符串，并指定不使用引号模式
         set_key(str(config.CONFIG_PATH), env_key, final_value, quote_mode="never")
 
         print_success("配置已更新")
-        console.print(f"[dim]{env_key} = {final_value}[/dim]")
+        console.print(f"[dim]{env_key} = {mask_config_value(env_key, final_value)}[/dim]")
     except Exception as e:
         print_error(f"写入失败: {e}")
+        raise typer.Exit(code=1)
 
 @app.command("language")
 def language(

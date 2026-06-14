@@ -9,6 +9,15 @@ from rich.prompt import Prompt
 console = Console()
 CONFIG_PATH = Path.home() / ".echoflow_env"
 
+
+def ensure_config_file() -> None:
+    CONFIG_PATH.touch(mode=0o600, exist_ok=True)
+    try:
+        CONFIG_PATH.chmod(0o600)
+    except OSError:
+        pass
+
+
 def clean_path(path_str: str) -> str:
     if not path_str:
         return ""
@@ -33,15 +42,15 @@ def init_config():
     """
     console.print(Panel.fit("Echoflow Init\n[dim]配置 API Key 与输出目录[/dim]", border_style="cyan"))
     
-    silicon_key = Prompt.ask("🔑 SiliconFlow API Key")
-    deepseek_key = Prompt.ask("🔑 DeepSeek API Key")
+    silicon_key = Prompt.ask("🔑 SiliconFlow API Key", password=True)
+    deepseek_key = Prompt.ask("🔑 DeepSeek API Key", password=True)
     
     console.print("[cyan]•[/cyan] 请拖入或粘贴笔记保存文件夹路径")
     raw_path = Prompt.ask("Path")
     output_dir = clean_path(raw_path)
 
     # 写入文件（set_key 默认逻辑就是 Key=Value，不带引号）
-    CONFIG_PATH.touch(mode=0o600, exist_ok=True)
+    ensure_config_file()
     
     # 注意：quote_mode="never" 确保写入时不加双引号
     set_key(str(CONFIG_PATH), "SILICONFLOW_API_KEY", silicon_key, quote_mode="never")
@@ -56,14 +65,13 @@ def set_language(lang: str):
     """
     设置全局输出语言（最终笔记输出语言）
     """
-    CONFIG_PATH.touch(mode=0o600, exist_ok=True)
+    ensure_config_file()
     set_key(str(CONFIG_PATH), "OUTPUT_LANGUAGE", lang, quote_mode="never")
     console.print(f"[bold green]✓[/bold green] 输出语言已更新为 [cyan]{lang}[/cyan]")
 
 def load_config(required_keys: tuple[str, ...] | None = None) -> bool:
-    if not CONFIG_PATH.exists():
-        return False
-    # 加载时 python-dotenv 会自动处理带空格的路径
-    load_dotenv(CONFIG_PATH, override=True)
+    if CONFIG_PATH.exists():
+        # 加载时 python-dotenv 会自动处理带空格的路径
+        load_dotenv(CONFIG_PATH, override=True)
     keys = required_keys or ("SILICONFLOW_API_KEY", "DEEPSEEK_API_KEY", "OUTPUT_DIR")
     return all(os.getenv(k) for k in keys)
