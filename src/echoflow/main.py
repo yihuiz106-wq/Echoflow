@@ -5,55 +5,103 @@ Echoflow CLI - Main Entry Point
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import typer
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 # 导入配置模块
 from echoflow import config
 from echoflow.config import set_language
+from echoflow.errors import (
+    ConfigError,
+    DownloadError,
+    SummaryError,
+    TranscriptionError,
+    WriteError,
+)
 
 # 导入核心模块 (注意：writer 必须更新以接收 output_dir)
-from echoflow.downloader import download_audio
+from echoflow.downloader import DownloadResult, download_audio
 from echoflow.transcriber import transcribe_audio
 from echoflow.summarizer import generate_summary, simplify_title
 from echoflow.writer import save_markdown, save_transcript
 
 # 初始化 Typer 应用和 Rich Console
 app = typer.Typer(help="Echoflow CLI - 视频转文字 + AI 总结工具")
-console = Console()
+console = Console(highlight=False)
+
+ACCENT = "cyan"
 
 
 def print_header(title: str, subtitle: str | None = None) -> None:
-    body = title if not subtitle else f"{title}\n[dim]{subtitle}[/dim]"
-    console.print(Panel.fit(body, border_style="cyan"))
+    title_text = Text(title, style=f"bold {ACCENT}")
+    if subtitle:
+        title_text.append("\n")
+        title_text.append(subtitle, style="dim")
+    console.print(
+        Panel.fit(
+            title_text,
+            border_style=ACCENT,
+            box=box.ROUNDED,
+            padding=(1, 2),
+        )
+    )
+
+
+def print_status(symbol: str, style: str, message: str) -> None:
+    console.print(f"[bold {style}]{symbol}[/bold {style}] {message}")
 
 
 def print_step(message: str) -> None:
-    console.print(f"[cyan]•[/cyan] {message}")
+    print_status("›", ACCENT, message)
 
 
 def print_success(message: str) -> None:
-    console.print(f"[bold green]✓[/bold green] {message}")
+    print_status("✓", "green", message)
 
 
 def print_warning(message: str) -> None:
-    console.print(f"[bold yellow]![/bold yellow] {message}")
+    print_status("!", "yellow", message)
 
 
 def print_error(message: str) -> None:
-    console.print(f"[bold red]✗[/bold red] {message}")
+    print_status("×", "red", message)
+
+
+def print_key_value(label: str, value: str) -> None:
+    console.print(f"  [dim]{label:<12}[/dim] [white]{value}[/white]")
+
+
+def print_output_path(title: str, path: str) -> None:
+    absolute_path = Path(path).absolute()
+    body = Text()
+    body.append("Saved to\n", style="dim")
+    body.append(str(absolute_path), style=f"bold {ACCENT} link file://{absolute_path}")
+    console.print(
+        Panel.fit(
+            body,
+            title=title,
+            title_align="left",
+            border_style="green",
+            box=box.ROUNDED,
+            padding=(1, 2),
+        )
+    )
 
 
 def print_video_title(metadata: dict) -> None:
     title = (metadata or {}).get("title", "").strip()
     if title:
-        console.print(f"[dim]标题：{title}[/dim]")
+        print_key_value("Title", title)
 
 
 def maybe_simplify_metadata_title(metadata: dict) -> dict:
@@ -72,7 +120,7 @@ def maybe_simplify_metadata_title(metadata: dict) -> dict:
     updated["original_title"] = original_title
     updated["title"] = simplified_title
 
-    console.print(f"[dim]精简标题：{simplified_title}[/dim]")
+    print_key_value("Short title", simplified_title)
     return updated
 
 
@@ -130,42 +178,90 @@ def fetch_transcript(url: str, *, convert_audio: bool = True) -> tuple[dict, str
     下载视频并返回元数据与文本。
     优先使用现成字幕；没有字幕时再调用 ASR。
     """
-    audio_path = None
+    download_result: DownloadResult | None = None
 
     try:
-        audio_path, subtitle_text, metadata, transcript_source = download_audio(
+        allow_audio_download = config.load_config(required_keys=("SILICONFLOW_API_KEY",))
+        download_result = download_audio(
             url,
             convert_audio=convert_audio,
+            allow_audio_download=allow_audio_download,
         )
+        metadata = download_result.metadata
 
         print_video_title(metadata)
         metadata = maybe_simplify_metadata_title(metadata)
 
-        if subtitle_text:
+        if download_result.subtitle_text:
             print_success("已提取视频字幕")
-            return metadata, subtitle_text
+            return metadata, download_result.subtitle_text
 
-        if transcript_source == "audio":
-            if not config.load_config(required_keys=("SILICONFLOW_API_KEY",)):
-                raise ValueError(
-                    "当前视频没有可用字幕，需要调用音频转录，"
-                    "但尚未配置 SILICONFLOW_API_KEY。请运行 `echoflow config sf <key>` 后重试。"
-                )
+        if download_result.source == "audio":
             print_success("已下载音频")
-        print_step(f"上传音频到 SiliconFlow: {Path(audio_path).name} · {format_file_size(audio_path)}")
-        transcript = transcribe_audio(audio_path)
+        if not download_result.audio_path:
+            raise TranscriptionError("未找到可用于转录的音频文件")
+        if not Path(download_result.audio_path).exists():
+            raise TranscriptionError(f"音频文件不存在: {download_result.audio_path}")
+        print_step(
+            f"上传音频到 SiliconFlow: {Path(download_result.audio_path).name} "
+            f"· {format_file_size(download_result.audio_path)}"
+        )
+        transcript = transcribe_audio(download_result.audio_path)
         return metadata, transcript
 
     finally:
-        if audio_path and os.path.exists(audio_path):
-            os.remove(audio_path)
+        if download_result:
+            download_result.cleanup()
+
+
+def format_cli_error(error: Exception) -> tuple[str, str]:
+    error_text = clean_terminal_text(str(error))
+    if isinstance(error, ConfigError):
+        return error_text, "提示: 请运行 `echoflow init` 或使用 `echoflow config` 补齐配置。"
+    if isinstance(error, DownloadError):
+        if is_bilibili_412_error(error_text):
+            return (
+                error_text,
+                "提示: 当前更像是 B 站风控或登录态问题。可先关闭浏览器后重试，"
+                "或运行 `echoflow config cookie chrome` 指定从 Chrome 读取 Cookie。",
+            )
+        return error_text, "提示: 请检查网络连接、视频链接是否有效，或运行 `echoflow update-yt-dlp`。"
+    if isinstance(error, TranscriptionError):
+        return error_text, "提示: 请检查 SiliconFlow API Key、余额、网络连接或音频文件格式。"
+    if isinstance(error, SummaryError):
+        return error_text, "提示: 请检查 DeepSeek API Key、余额、网络连接，或稍后重试。"
+    if isinstance(error, WriteError):
+        return error_text, "提示: 请检查输出目录是否存在、可写，或文件名是否有效。"
+    return error_text, "提示: 请检查网络连接、视频链接是否有效，或 API 余额是否充足。"
+
+
+def print_cli_error(prefix: str, error: Exception) -> None:
+    error_text, hint = format_cli_error(error)
+    body = Text()
+    body.append(error_text or "未知错误", style="bold red")
+    body.append("\n")
+    body.append(hint, style="dim")
+    console.print(
+        Panel.fit(
+            body,
+            title=prefix,
+            title_align="left",
+            border_style="red",
+            box=box.ROUNDED,
+            padding=(1, 2),
+        )
+    )
 
 @app.command()
 def init():
     """
     初始化 Echoflow 配置 (API Keys 和 保存路径)。
     """
-    config.init_config()
+    try:
+        config.init_config()
+    except ConfigError as e:
+        print_cli_error("初始化失败", e)
+        raise typer.Exit(code=1)
 
 @app.command(name="config")
 def config_update(
@@ -204,9 +300,9 @@ def config_update(
         if not os.path.exists(final_value):
             try:
                 os.makedirs(final_value, exist_ok=True)
-                console.print(f"[dim]已自动创建目录: {final_value}[/dim]")
+                print_key_value("Created", final_value)
             except Exception as e:
-                console.print(f"[bold red]无法创建目录: {e}[/bold red]")
+                print_cli_error("配置失败", ConfigError(f"无法创建目录: {e}"))
                 raise typer.Exit(code=1)
 
     # 3. 写入配置文件，强制不加引号
@@ -216,9 +312,9 @@ def config_update(
         set_key(str(config.CONFIG_PATH), env_key, final_value, quote_mode="never")
 
         print_success("配置已更新")
-        console.print(f"[dim]{env_key} = {mask_config_value(env_key, final_value)}[/dim]")
+        print_key_value(env_key, mask_config_value(env_key, final_value))
     except Exception as e:
-        print_error(f"写入失败: {e}")
+        print_cli_error("配置失败", ConfigError(f"写入失败: {e}"))
         raise typer.Exit(code=1)
 
 @app.command("language")
@@ -240,7 +336,11 @@ def language(
     elif lower in {"中文", "zh", "zh-cn", "zh-hans", "chinese", "cn"}:
         normalized = "中文"
 
-    set_language(normalized)
+    try:
+        set_language(normalized)
+    except ConfigError as e:
+        print_cli_error("语言设置失败", e)
+        raise typer.Exit(code=1)
 
 
 @app.command("update-yt-dlp", help="更新当前虚拟环境里的 yt-dlp")
@@ -250,7 +350,7 @@ def update_yt_dlp():
     """
     current_version = get_package_version("yt-dlp")
     print_header("Update yt-dlp", f"当前版本: {current_version}")
-    print_step(f"使用解释器: {sys.executable}")
+    print_key_value("Python", sys.executable)
 
     try:
         result = subprocess.run(
@@ -265,9 +365,7 @@ def update_yt_dlp():
 
     if result.returncode != 0:
         error_text = (result.stderr or result.stdout or "").strip()
-        print_error("yt-dlp 更新失败")
-        if error_text:
-            console.print(f"[dim]{error_text}[/dim]")
+        print_cli_error("yt-dlp 更新失败", DownloadError(error_text or "pip install --upgrade yt-dlp failed"))
         raise typer.Exit(code=1)
 
     new_version = get_package_version("yt-dlp")
@@ -275,7 +373,77 @@ def update_yt_dlp():
     output_text = (result.stdout or "").strip()
     if output_text:
         last_line = output_text.splitlines()[-1]
-        console.print(f"[dim]{last_line}[/dim]")
+        print_key_value("pip", last_line)
+
+
+def doctor_checks() -> list[tuple[str, bool, str]]:
+    config.load_config(required_keys=())
+
+    checks: list[tuple[str, bool, str]] = []
+    python_ok = sys.version_info >= (3, 10)
+    checks.append(("Python", python_ok, sys.version.split()[0]))
+
+    for package in ("typer", "rich", "yt-dlp", "openai", "python-dotenv"):
+        package_version = get_package_version(package)
+        checks.append((package, package_version != "not installed", package_version))
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    checks.append(("ffmpeg", bool(ffmpeg_path), ffmpeg_path or "not found"))
+
+    checks.append(
+        (
+            "config file",
+            config.CONFIG_PATH.exists(),
+            str(config.CONFIG_PATH),
+        )
+    )
+
+    for env_key in ("SILICONFLOW_API_KEY", "DEEPSEEK_API_KEY", "OUTPUT_DIR"):
+        value = os.getenv(env_key)
+        checks.append((env_key, bool(value), "set" if value else "missing"))
+
+    output_dir = os.getenv("OUTPUT_DIR")
+    if output_dir:
+        output_path = Path(output_dir)
+        writable = output_path.exists() and os.access(output_path, os.W_OK)
+        checks.append(("output writable", writable, str(output_path)))
+    else:
+        checks.append(("output writable", False, "OUTPUT_DIR missing"))
+
+    return checks
+
+
+def print_doctor_report(checks: list[tuple[str, bool, str]]) -> bool:
+    table = Table(
+        box=box.SIMPLE_HEAVY,
+        show_header=True,
+        header_style=f"bold {ACCENT}",
+        pad_edge=False,
+    )
+    table.add_column("Status", width=8, no_wrap=True)
+    table.add_column("Check", style="white", no_wrap=True)
+    table.add_column("Detail", style="dim")
+
+    failed = False
+    for name, ok, detail in checks:
+        if ok:
+            table.add_row("[bold green]OK[/bold green]", name, detail)
+        else:
+            failed = True
+            table.add_row("[bold yellow]WARN[/bold yellow]", name, detail)
+
+    console.print(table)
+    return failed
+
+
+@app.command("doctor", help="检查本地环境与配置，不调用外部 API")
+def doctor():
+    print_header("Echoflow Doctor", "本地环境检查，不验证 API Key 有效性")
+    failed = print_doctor_report(doctor_checks())
+
+    if failed:
+        raise typer.Exit(code=1)
+
 
 @app.command(name="run", help="开始处理: 下载 -> 转录 -> 总结")
 def main(
@@ -308,18 +476,10 @@ def main(
         final_path = save_markdown(metadata, description, content, output_dir=output_dir)
 
         print_success("文稿已保存")
-        console.print(f"[link=file://{Path(final_path).absolute()}]{final_path}[/link]")
+        print_output_path("Markdown note", final_path)
 
     except Exception as e:
-        error_text = clean_terminal_text(str(e))
-        print_error(f"运行失败: {error_text}")
-        if is_bilibili_412_error(error_text):
-            console.print(
-                "[dim]提示: 当前更像是 B 站风控或登录态问题。可先关闭浏览器后重试，"
-                "或运行 `echoflow config cookie chrome` 指定从 Chrome 读取 Cookie。[/dim]"
-            )
-        else:
-            console.print("[dim]提示: 请检查网络连接、视频链接是否有效，或 API 余额是否充足。[/dim]")
+        print_cli_error("运行失败", e)
         raise typer.Exit(code=1)
 
 
@@ -347,18 +507,10 @@ def transcript_only(
         final_path = save_transcript(metadata, transcript, output_dir=output_dir)
 
         print_success("转录文本已保存")
-        console.print(f"[link=file://{Path(final_path).absolute()}]{final_path}[/link]")
+        print_output_path("Transcript", final_path)
 
     except Exception as e:
-        error_text = clean_terminal_text(str(e))
-        print_error(f"运行失败: {error_text}")
-        if is_bilibili_412_error(error_text):
-            console.print(
-                "[dim]提示: 当前更像是 B 站风控或登录态问题。可先关闭浏览器后重试，"
-                "或运行 `echoflow config cookie chrome` 指定从 Chrome 读取 Cookie。[/dim]"
-            )
-        else:
-            console.print("[dim]提示: 请检查网络连接、视频链接是否有效，或 API 余额是否充足。[/dim]")
+        print_cli_error("运行失败", e)
         raise typer.Exit(code=1)
 
 if __name__ == "__main__":

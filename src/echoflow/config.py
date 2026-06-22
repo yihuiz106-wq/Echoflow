@@ -2,16 +2,22 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv, set_key
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
+from echoflow.errors import ConfigError
 
-console = Console()
+console = Console(highlight=False)
 CONFIG_PATH = Path.home() / ".echoflow_env"
+ACCENT = "cyan"
 
 
 def ensure_config_file() -> None:
-    CONFIG_PATH.touch(mode=0o600, exist_ok=True)
+    try:
+        CONFIG_PATH.touch(mode=0o600, exist_ok=True)
+    except OSError as e:
+        raise ConfigError(f"无法写入配置文件 {CONFIG_PATH}: {e}")
     try:
         CONFIG_PATH.chmod(0o600)
     except OSError:
@@ -40,12 +46,19 @@ def init_config():
     """
     初始化配置并写入文件
     """
-    console.print(Panel.fit("Echoflow Init\n[dim]配置 API Key 与输出目录[/dim]", border_style="cyan"))
+    console.print(
+        Panel.fit(
+            "Echoflow Init\n[dim]配置 API Key 与输出目录[/dim]",
+            border_style=ACCENT,
+            box=box.ROUNDED,
+            padding=(1, 2),
+        )
+    )
     
-    silicon_key = Prompt.ask("🔑 SiliconFlow API Key", password=True)
-    deepseek_key = Prompt.ask("🔑 DeepSeek API Key", password=True)
+    silicon_key = Prompt.ask("SiliconFlow API Key", password=True)
+    deepseek_key = Prompt.ask("DeepSeek API Key", password=True)
     
-    console.print("[cyan]•[/cyan] 请拖入或粘贴笔记保存文件夹路径")
+    console.print(f"[bold {ACCENT}]›[/bold {ACCENT}] 请拖入或粘贴笔记保存文件夹路径")
     raw_path = Prompt.ask("Path")
     output_dir = clean_path(raw_path)
 
@@ -58,8 +71,9 @@ def init_config():
     set_key(str(CONFIG_PATH), "OUTPUT_DIR", output_dir, quote_mode="never")
     set_key(str(CONFIG_PATH), "OUTPUT_LANGUAGE", "中文", quote_mode="never")
     
-    console.print(f"[bold green]✓[/bold green] 配置已保存至 {CONFIG_PATH}")
-    console.print(f"[dim]输出目录: {output_dir}[/dim]")
+    console.print(f"[bold green]✓[/bold green] 配置已保存")
+    console.print(f"  [dim]{'Config':<12}[/dim] [white]{CONFIG_PATH}[/white]")
+    console.print(f"  [dim]{'Output':<12}[/dim] [white]{output_dir}[/white]")
 
 def set_language(lang: str):
     """
@@ -67,7 +81,8 @@ def set_language(lang: str):
     """
     ensure_config_file()
     set_key(str(CONFIG_PATH), "OUTPUT_LANGUAGE", lang, quote_mode="never")
-    console.print(f"[bold green]✓[/bold green] 输出语言已更新为 [cyan]{lang}[/cyan]")
+    console.print(f"[bold green]✓[/bold green] 输出语言已更新")
+    console.print(f"  [dim]{'Language':<12}[/dim] [white]{lang}[/white]")
 
 def load_config(required_keys: tuple[str, ...] | None = None) -> bool:
     if CONFIG_PATH.exists():

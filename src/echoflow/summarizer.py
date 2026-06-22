@@ -10,6 +10,8 @@ import ast
 from dotenv import load_dotenv
 from openai import OpenAI
 from echoflow.config import CONFIG_PATH
+from echoflow.errors import ConfigError, SummaryError
+from echoflow.retry import call_with_retry
 
 # 优先加载用户配置，避免项目根目录里的旧 .env 抢占配置
 load_dotenv(CONFIG_PATH, override=True)
@@ -32,22 +34,22 @@ def generate_summary(text: str) -> tuple[str, str]:
             - content (str): Typora 友好的 Markdown 正文
         
     Raises:
-        ValueError: 当 API Key 未配置或输入文本为空时
-        Exception: API 调用失败
+        ConfigError: 当 API Key 未配置时
+        SummaryError: 当输入文本为空或 API 调用失败时
     """
     target_lang = os.getenv("OUTPUT_LANGUAGE", "中文")
 
     # 验证 API Key
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
-        raise ValueError(
+        raise ConfigError(
             "未找到 DEEPSEEK_API_KEY 环境变量。\n"
             "请运行 `echoflow init`，或检查 ~/.echoflow_env 中的 DEEPSEEK_API_KEY"
         )
     
     # 验证输入文本
     if not text or text.strip() == "":
-        raise ValueError("输入文本不能为空")
+        raise SummaryError("输入文本不能为空")
     
     try:
         # 初始化 OpenAI 客户端 (指向 DeepSeek 官方 API)
@@ -57,24 +59,28 @@ def generate_summary(text: str) -> tuple[str, str]:
         )
         
         # 调用 DeepSeek V4 Pro API
-        response = client.chat.completions.create(
-            model="deepseek-v4-pro",
-            messages=build_summary_messages(target_lang, text),
-            temperature=SUMMARY_TEMPERATURE,
-            max_tokens=SUMMARY_MAX_TOKENS,
+        response = call_with_retry(
+            lambda: client.chat.completions.create(
+                model="deepseek-v4-pro",
+                messages=build_summary_messages(target_lang, text),
+                temperature=SUMMARY_TEMPERATURE,
+                max_tokens=SUMMARY_MAX_TOKENS,
+            )
         )
         
         # 获取 AI 返回内容
         raw_content = response.choices[0].message.content
         
         if not raw_content or raw_content.strip() == "":
-            raise Exception("AI 返回内容为空")
+            raise SummaryError("AI 返回内容为空")
         
         return parse_summary_response(raw_content)
     
     except Exception as e:
+        if isinstance(e, (ConfigError, SummaryError)):
+            raise
         error_message = str(e)
-        raise Exception(f"DeepSeek V4 Pro API 调用失败: {error_message}")
+        raise SummaryError(f"DeepSeek V4 Pro API 调用失败: {error_message}")
 
 
 def build_summary_system_prompt(target_lang: str) -> str:
@@ -474,10 +480,10 @@ def generate_summary_with_custom_prompt(text: str, custom_prompt: str) -> tuple[
     """
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
-        raise ValueError("未找到 DEEPSEEK_API_KEY 环境变量")
+        raise ConfigError("未找到 DEEPSEEK_API_KEY 环境变量")
     
     if not text or text.strip() == "":
-        raise ValueError("输入文本不能为空")
+        raise SummaryError("输入文本不能为空")
     
     try:
         client = OpenAI(
@@ -485,16 +491,16 @@ def generate_summary_with_custom_prompt(text: str, custom_prompt: str) -> tuple[
             base_url="https://api.deepseek.com"
         )
         
-        print(f"正在使用自定义 Prompt 生成内容...")
-        
-        response = client.chat.completions.create(
-            model="deepseek-v4-pro",
-            messages=[
-                {"role": "system", "content": custom_prompt},
-                {"role": "user", "content": text}
-            ],
-            temperature=0.6,
-            max_tokens=4000
+        response = call_with_retry(
+            lambda: client.chat.completions.create(
+                model="deepseek-v4-pro",
+                messages=[
+                    {"role": "system", "content": custom_prompt},
+                    {"role": "user", "content": text}
+                ],
+                temperature=0.6,
+                max_tokens=4000,
+            )
         )
         
         raw_content = response.choices[0].message.content
@@ -503,75 +509,9 @@ def generate_summary_with_custom_prompt(text: str, custom_prompt: str) -> tuple[
         # 分离 description 和 content
         description, content = split_description_and_content(processed_content)
         
-        print(f"✓ 内容生成成功")
         return description, content
     
     except Exception as e:
-        print(f"✗ 生成失败: {e}")
-        raise
-
-
-if __name__ == "__main__":
-    # 测试代码
-    import sys
-    
-    if len(sys.argv) < 2:
-        print("用法: python summarizer.py <转录文本文件路径>")
-        print("或者: python summarizer.py --test (使用示例文本测试)")
-        sys.exit(1)
-    
-    # 测试模式
-    if sys.argv[1] == "--test":
-        test_text = """
-        大家好,今天我们来聊一聊人工智能的发展。嗯,首先呢,我想说的是,
-        AI 技术在最近几年有了非常大的突破,特别是在大语言模型方面。
-        像 GPT 系列、Claude 这些模型,它们能够理解和生成非常自然的文本。
-        那么,这些技术会给我们的生活带来什么变化呢?我觉得主要有三个方面。
-        第一个是工作效率的提升,比如说写代码、写文档这些事情,AI 都可以帮我们做。
-        第二个是创造力的释放,艺术家可以用 AI 来辅助创作,程序员也可以更专注于创新。
-        第三个呢,就是知识的普及,每个人都可以通过 AI 学习新的知识。
-        当然了,AI 技术也有一些挑战,比如说伦理问题、隐私问题,这些都需要我们认真对待。
-        """
-        print("=" * 60)
-        print("使用测试文本运行...")
-        print("=" * 60)
-        
-        try:
-            description, content = generate_summary(test_text)
-            print("\n" + "=" * 60)
-            print("生成的结果:")
-            print("=" * 60)
-            print(f"\n一句话简介:\n{description}")
-            print(f"\nMarkdown 正文:\n{content}")
-        except Exception as e:
-            print(f"\n测试失败: {e}")
-            sys.exit(1)
-    
-    # 文件模式
-    else:
-        text_file = sys.argv[1]
-        try:
-            with open(text_file, 'r', encoding='utf-8') as f:
-                text = f.read()
-            
-            description, content = generate_summary(text)
-            
-            # 保存到输出文件
-            output_file = text_file.replace('.txt', '_summary.md')
-            full_output = f"简介: {description}\n\n{content}"
-            
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(full_output)
-            
-            print(f"\n✓ 总结已保存到: {output_file}")
-            print("\n预览:")
-            print("=" * 60)
-            print(f"简介: {description}")
-            print(f"\n{content[:300]}..." if len(content) > 300 else content)
-            
-        except FileNotFoundError:
-            print(f"✗ 文件不存在: {text_file}")
-            sys.exit(1)
-        except Exception as e:
-            print(f"\n处理失败: {e}")
-            sys.exit(1)
+        if isinstance(e, (ConfigError, SummaryError)):
+            raise
+        raise SummaryError(f"DeepSeek V4 Pro API 调用失败: {e}")

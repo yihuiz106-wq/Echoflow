@@ -12,13 +12,16 @@ import glob
 import io
 import os
 import re
+import shutil
 import tempfile
 from contextlib import redirect_stderr
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import yt_dlp
+from echoflow.errors import ConfigError, DownloadError
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -29,6 +32,32 @@ from rich.progress import (
     TimeRemainingColumn,
     TransferSpeedColumn,
 )
+
+AUDIO_EXTENSIONS = {
+    ".aac",
+    ".flac",
+    ".m4a",
+    ".mka",
+    ".mp3",
+    ".mp4",
+    ".oga",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".webm",
+}
+
+
+@dataclass
+class DownloadResult:
+    audio_path: str | None
+    subtitle_text: str | None
+    metadata: dict
+    source: str
+    temp_dir: Path
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
 
 
 class QuietYtDlpLogger:
@@ -53,6 +82,17 @@ def should_retry_with_browser_cookies(error_message: str, url: str) -> bool:
     normalized = (error_message or "").lower()
     return is_bilibili_url(url) and (
         "412" in normalized or "precondition failed" in normalized
+    )
+
+
+def is_subtitle_fallback_error(error_message: str) -> bool:
+    normalized = (error_message or "").lower()
+    return (
+        "429" in normalized
+        or "too many requests" in normalized
+        or "subtitles" in normalized
+        or "subtitle" in normalized
+        or "caption" in normalized
     )
 
 
@@ -115,6 +155,45 @@ def clean_subtitle(file_path: str) -> str:
     text = " ".join(lines)
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+def resolve_audio_path(prepared_filename: str, temp_dir: Path, *, convert_audio: bool) -> Path:
+    """
+    Locate the real audio file produced by yt-dlp/ffmpeg.
+
+    yt-dlp's prepared filename is the pre-postprocessor path. In practice the
+    final extension can differ depending on extractor/container behavior, so we
+    verify the path instead of assuming .mp3 always exists.
+    """
+    prepared_path = Path(prepared_filename)
+    direct_candidates: list[Path] = []
+
+    if convert_audio:
+        direct_candidates.append(prepared_path.with_suffix(".mp3"))
+    direct_candidates.append(prepared_path)
+
+    for candidate in direct_candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+    candidates = [
+        path
+        for path in temp_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS
+    ]
+
+    if candidates:
+        candidates.sort(
+            key=lambda path: (
+                0 if convert_audio and path.suffix.lower() == ".mp3" else 1,
+                -path.stat().st_size,
+                -path.stat().st_mtime,
+            )
+        )
+        return candidates[0]
+
+    available_files = ", ".join(sorted(path.name for path in temp_dir.iterdir())) or "empty"
+    raise DownloadError(f"音频下载完成，但没有找到可用音频文件。临时目录内容: {available_files}")
 
 
 def normalize_video_url(raw: str) -> str:
@@ -185,22 +264,25 @@ def download_audio(
     url: str,
     *,
     convert_audio: bool = True,
-) -> tuple[str | None, str | None, dict, str]:
+    allow_audio_download: bool = True,
+) -> DownloadResult:
     """
     下载音频到系统临时缓存目录，并尽可能下载/提取字幕文本。
     若字幕下载遇到 429 / Too Many Requests / subtitles 相关错误，将自动降级为纯音频下载。
 
     Returns:
-        (audio_path, subtitle_text, metadata, transcript_source)
+        DownloadResult(audio_path, subtitle_text, metadata, source, temp_dir)
     """
-    normalized_url = normalize_video_url(url)
+    try:
+        normalized_url = normalize_video_url(url)
+    except ValueError as e:
+        raise DownloadError(str(e))
 
-    temp_dir = Path(tempfile.gettempdir()) / "echoflow_cache"
-    temp_dir.mkdir(parents=True, exist_ok=True)
+    cache_root = Path(tempfile.gettempdir()) / "echoflow_cache"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    temp_dir = Path(tempfile.mkdtemp(prefix="run_", dir=cache_root))
 
     console = Console()
-    used_cookie_retry = False
-
     # 1) 分离配置：基础配置 + 字幕探测配置 + 音频下载配置
     common_opts: dict = {
         "outtmpl": str(temp_dir / "%(id)s.%(ext)s"),
@@ -321,7 +403,6 @@ def download_audio(
         try:
             return execute_download(ydl_opts)
         except Exception as first_error:
-            nonlocal used_cookie_retry
             if not should_retry_with_browser_cookies(str(first_error), normalized_url):
                 raise
             if ydl_opts.get("cookiesfrombrowser"):
@@ -332,11 +413,7 @@ def download_audio(
                 retry_opts = dict(ydl_opts)
                 retry_opts["cookiesfrombrowser"] = (browser, None, None, None)
                 try:
-                    result = execute_download(retry_opts)
-                    if not used_cookie_retry:
-                        console.print(f"[yellow]已使用 {browser} 浏览器 Cookie 通过 B 站校验[/yellow]")
-                        used_cookie_retry = True
-                    return result
+                    return execute_download(retry_opts)
                 except Exception as cookie_error:
                     last_error = cookie_error
 
@@ -348,44 +425,69 @@ def download_audio(
         preferred_langs = ("zh-Hans", "zh-Hant", "zh-CN", "zh-TW", "zh", "en")
         return any(lang in subtitles or lang in automatic_captions for lang in preferred_langs)
 
-    with progress:
-        # 2) 第一次尝试：先快速探测是否存在字幕轨道
-        try:
-            progress.update(task_id, description="正在提取字幕...", total=None, completed=0)
-            info, filename = run_download(
-                subtitle_probe_opts,
-                show_progress=False,
-                should_download=False,
-            )
-            metadata = extract_metadata(info, normalized_url)
-            if has_subtitle_tracks(info):
+    try:
+        with progress:
+            # 2) 第一次尝试：先快速探测是否存在字幕轨道
+            try:
+                progress.update(task_id, description="正在提取字幕...", total=None, completed=0)
                 info, filename = run_download(
-                    subtitle_download_opts,
+                    subtitle_probe_opts,
                     show_progress=False,
-                    should_download=True,
+                    should_download=False,
                 )
-                base_filename = os.path.splitext(filename)[0]
-                subtitle_text = find_subtitle_text(base_filename)
+                metadata = extract_metadata(info, normalized_url)
+                if has_subtitle_tracks(info):
+                    info, filename = run_download(
+                        subtitle_download_opts,
+                        show_progress=False,
+                        should_download=True,
+                    )
+                    base_filename = os.path.splitext(filename)[0]
+                    subtitle_text = find_subtitle_text(base_filename)
 
-                if subtitle_text:
-                    progress.update(task_id, description="[bold green]字幕下载成功[/bold green]")
-                    return None, subtitle_text, metadata, "subtitle"
+                    if subtitle_text:
+                        progress.update(task_id, description="[bold green]字幕下载成功[/bold green]")
+                        return DownloadResult(
+                            audio_path=None,
+                            subtitle_text=subtitle_text,
+                            metadata=metadata,
+                            source="subtitle",
+                            temp_dir=temp_dir,
+                        )
 
-        # 3) 字幕异常时静默降级到音频；无字幕本身属于正常情况
-        except Exception as e:
-            error_msg = str(e).lower()
-            if ("429" in error_msg) or ("too many requests" in error_msg) or ("subtitles" in error_msg):
-                console.print(
-                    "\n[bold yellow]⚠️ 字幕获取失败，已自动降级：跳过字幕，采用纯音频+AI听写模式...[/bold yellow]"
+            # 3) 字幕异常时静默降级到音频；无字幕本身属于正常情况
+            except Exception as e:
+                if not is_subtitle_fallback_error(str(e)):
+                    raise DownloadError(f"视频探测失败: {e}")
+
+            if not allow_audio_download:
+                raise ConfigError(
+                    "当前视频没有可用字幕，需要调用音频转录，"
+                    "但尚未配置 SILICONFLOW_API_KEY。请运行 `echoflow config sf <key>` 后重试。"
                 )
 
-        # 4) 第二次尝试：只在确实没有可用字幕时下载音频
-        progress.update(task_id, description="正在下载音频...", total=0, completed=0)
-        info, filename = run_download(audio_opts, show_progress=True, should_download=True)
-        final_filepath = Path(filename).with_suffix(".mp3") if convert_audio else Path(filename)
-        metadata = extract_metadata(info, normalized_url)
-        progress.update(task_id, description="[bold green]音频下载成功[/bold green]")
-        return str(final_filepath.absolute()), None, metadata, "audio"
+            # 4) 第二次尝试：只在确实没有可用字幕时下载音频
+            progress.update(task_id, description="正在下载音频...", total=0, completed=0)
+            info, filename = run_download(audio_opts, show_progress=True, should_download=True)
+            final_filepath = resolve_audio_path(filename, temp_dir, convert_audio=convert_audio)
+            metadata = extract_metadata(info, normalized_url)
+            progress.update(task_id, description="[bold green]音频下载成功[/bold green]")
+            return DownloadResult(
+                audio_path=str(final_filepath.absolute()),
+                subtitle_text=None,
+                metadata=metadata,
+                source="audio",
+                temp_dir=temp_dir,
+            )
+
+    except ConfigError:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+    except Exception as e:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        if isinstance(e, DownloadError):
+            raise
+        raise DownloadError(f"下载视频内容失败: {e}")
 
 
 def extract_metadata(info: dict, original_url: str) -> dict:
@@ -412,30 +514,3 @@ def format_date(date_str: str) -> str:
     if date_str and len(date_str) == 8:
         return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
     return datetime.now().strftime("%Y-%m-%d")
-
-
-if __name__ == "__main__":
-    print("=" * 60)
-    print("测试 Audio Downloader (Cache Mode)")
-    print("=" * 60)
-
-    test_url = "https://www.bilibili.com/video/BV1uT4y1P7CX"
-
-    try:
-        path, subtitle, meta, source = download_audio(test_url)
-        print("\n测试成功！")
-        print(f"临时文件路径: {path}")
-        print(f"字幕提取: {'有' if subtitle else '无'}")
-        print(f"转录来源: {source}")
-        print(f"元数据: {meta['title']}")
-
-        import time
-
-        print("等待 3 秒后模拟清理...")
-        time.sleep(3)
-        if path and os.path.exists(path):
-            os.remove(path)
-            print("缓存文件已删除。")
-
-    except Exception as e:
-        print(f"测试出错: {e}")

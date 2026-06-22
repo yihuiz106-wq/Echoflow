@@ -174,6 +174,14 @@ echoflow update-yt-dlp
 
 当视频下载、字幕提取突然异常时，通常值得先跑一次这个命令。
 
+### 检查本地环境
+
+```bash
+echoflow doctor
+```
+
+这个命令只检查 Python 版本、依赖、`ffmpeg`、配置文件和输出目录，不会调用 DeepSeek 或 SiliconFlow API。
+
 ### 查看帮助
 
 ```bash

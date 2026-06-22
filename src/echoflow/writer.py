@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 from echoflow.config import CONFIG_PATH
+from echoflow.errors import WriteError
 
 # 优先加载用户配置，避免项目根目录里的旧 .env 抢占输出目录
 load_dotenv(CONFIG_PATH, override=True)
@@ -39,7 +40,6 @@ def save_markdown(metadata: dict, description: str, content: str, output_dir: st
         
         # 确保目录存在
         output_path.mkdir(parents=True, exist_ok=True)
-        # print(f"输出目录: {output_path.absolute()}") # 这一行在 main 中已有提示，可以注释掉保持清爽
         
         # 生成安全的文件名
         title = metadata.get('title', 'Untitled')
@@ -56,15 +56,11 @@ def save_markdown(metadata: dict, description: str, content: str, output_dir: st
         # 写入文件
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(full_content)
-        
-        # 这里 print 可以保留用于调试，也可以让 main 去统一输出
-        # print(f"✓ Markdown 文件已保存: {filepath.name}")
-        
+
         return str(filepath.absolute())
     
     except Exception as e:
-        print(f"✗ 保存文件失败: {e}")
-        raise Exception(f"保存 Markdown 文件失败: {e}")
+        raise WriteError(f"保存 Markdown 文件失败: {e}")
 
 
 def save_transcript(metadata: dict, transcript: str, output_dir: str | None = None) -> str:
@@ -90,8 +86,7 @@ def save_transcript(metadata: dict, transcript: str, output_dir: str | None = No
         return str(filepath.absolute())
 
     except Exception as e:
-        print(f"✗ 保存转录文本失败: {e}")
-        raise Exception(f"保存转录文本失败: {e}")
+        raise WriteError(f"保存转录文本失败: {e}")
 
 
 def sanitize_filename(filename: str, max_length: int = 200) -> str:
